@@ -2,7 +2,7 @@
 
 **A fully-local, low-latency, voice-to-voice conversational app for the [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) robot — running entirely on Apple Silicon (MLX/Metal). No cloud, no API keys, no data leaving your Mac.**
 
-Talk to Reachy and it talks back, in about half a second, with the robot turning to look at whoever is speaking and reacting with emotion — all computed on-device.
+Talk to Reachy and it talks back, in under a second. Feels natural. Should work on most modern Macs with M2, M3, M4, M5 processors with 16+GB of RAM. 
 
 ## Quick start
 
@@ -16,10 +16,6 @@ PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --robot
 ```
 
 `--robot` expects the **Reachy Mini daemon at `http://localhost:8000`**. Start a simulator daemon in another terminal first:
-
-```bash
-.venv/bin/reachy-mini-daemon --mockup-sim      # headless mock daemon on localhost:8000
-```
 
 (For a physical **Wireless** robot, point at it instead with `--robot-url http://reachy-mini.local:8000`.)
 
@@ -35,10 +31,6 @@ PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --tts kokoro
 # Low-RAM machine — skip the second (vision) model:
 PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --no-vision
 
-# Wake-word mode — idle until "Hey Reachy":
-PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --wake
-```
-
 Run it in a **real terminal** (Terminal.app / iTerm) so macOS grants microphone access. First launch downloads models and warms up (STT + LLM + TTS + vision), so judge responsiveness from the second turn on. Mid-conversation, say **"Hey Reachy, can you clone my voice?"** to switch to a clone of your voice.
 
 ## Features
@@ -53,13 +45,6 @@ Run it in a **real terminal** (Terminal.app / iTerm) so macOS grants microphone 
 
 ## Architecture
 
-The app is a streaming cascade where each stage overlaps the next; robot embodiment is fully decoupled from the voice path. For the full rationale, component choices, and measured latency/memory budgets, see:
-
-- **[`docs/architecture.md`](docs/architecture.md)** — stack rationale and the measured voice-to-voice budget.
-- **[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)** — consolidated performance report (per-component + end-to-end p50/p95).
-- **[`plan.md`](plan.md)** — the living plan and design decisions.
-- **[`docs/FUTURE_WORK.md`](docs/FUTURE_WORK.md)** — deferred experiments (emotive TTS, speculative LLM start, etc.).
-
 ```
 mic → VAD/endpoint → STT(finalize) → LLM(stream clauses) → TTS(stream) → speaker
          (Silero +     (Parakeet)      (Gemma 4)            (Kokoro)
@@ -67,18 +52,7 @@ mic → VAD/endpoint → STT(finalize) → LLM(stream clauses) → TTS(stream) �
                                   └── robot look-at-speaker + emotion (decoupled loop)
 ```
 
-## Prerequisites
-
-- **macOS on Apple Silicon** (M1/M2/M3/M4). The MLX wheels are arm64-mac only — this will not run on Intel Macs or other platforms.
-- **~16–24 GB RAM.** The speed config (E2B + Kokoro) needs ~7.5 GB resident; the quality config (E4B + vision) needs ~12.5 GB. A 24 GB machine is the deploy target; 16 GB works for the speed config.
-- **[`uv`](https://docs.astral.sh/uv/)** — the installer/runner (`brew install uv`). It downloads the correct Python automatically.
-- **A microphone and speakers/headphones.** Headphones are recommended for cleaner audio on a Mac (no hardware echo cancellation; see Troubleshooting).
-- **Hugging Face access** — models download from the Hub on first run (several GB, one-time). Most are public; logging in avoids rate limits: `uv run hf auth login` (or `huggingface-cli login`).
-- **`ffmpeg`** (optional) — handy for audio handling: `brew install ffmpeg`.
-
 ## Getting Started
-
-The project ships a pinned Python version (`.python-version` = 3.12) and a console entry point, so `uv` selects and downloads the right interpreter automatically:
 
 ```bash
 git clone <this-repo> ReachyChatOffline
@@ -95,53 +69,13 @@ That installs the `reachy-chat` command. Verify:
 uv run reachy-chat --help
 ```
 
-> **Wrong-Python guard:** the app requires Python 3.10–3.12 (verified on 3.12). On any other interpreter it exits immediately with a clear message instead of a cryptic import error:
-> ```
-> Reachy Chat needs Python 3.10–3.12; you have 3.13.
-> Recreate the environment with the right interpreter:
->     uv venv --python 3.12 && uv pip install -e .
-> ```
-
 Now choose a setup path below depending on whether you have a physical robot.
 
 ---
 
-## Setup Path A — Reachy Mini Simulator (no hardware)
+## Setup Path A — Physical Reachy Mini
 
-You can run the **full** app — including `--robot` (look-at-speaker, emotions) and `--vision` — against a simulated robot. The robot daemon serves a REST API on `http://localhost:8000`; the app just needs *something* answering there.
-
-There are two simulator options:
-
-**1. Headless mock daemon (fastest, no GUI, no MuJoCo)** — perfect for exercising the robot/vision code paths:
-
-```bash
-uv run reachy-mini-daemon --mockup-sim
-```
-
-This starts the daemon on `localhost:8000` with no 3D window and no MuJoCo dependency. Robot motion commands are accepted (and acknowledged) so look-at-speaker and emotion calls succeed without hardware.
-
-**2. Full MuJoCo physics simulator (3D viewer)** — see the robot actually move:
-
-```bash
-# Install the simulator extra once:
-uv pip install -e ".[sim]"     # pulls in reachy-mini[mujoco]
-
-# On macOS, MuJoCo's GUI needs the mjpython launcher (a plain `--sim` may not open the window):
-uv run mjpython -m reachy_mini.daemon.app.main --sim
-# (add --scene minimal for a table with objects)
-```
-
-> macOS note: `uv` can be finicky with MuJoCo wheels. If the 3D sim misbehaves, the Pollen docs recommend installing the `mujoco` package with plain `pip`, or just use `--mockup-sim` above. See `.reference/reachy_mini/docs/source/platforms/simulation/get_started.md`.
-
-Alternatively, the **Reachy Mini Control** desktop app ([download](https://hf.co/reachy-mini/#/download)) can host a local simulated daemon on `localhost:8000` too.
-
-With a daemon running on `localhost:8000`, run the app with `--robot` (and optionally `--vision`) — see **Running it** below. (The voice pipeline itself runs fine with **no** daemon; you only need it for `--robot`/`--vision`.)
-
----
-
-## Setup Path B — Physical Reachy Mini
-
-1. **Assemble and connect your robot** (Lite or Wireless) following the Pollen Robotics guides, and install **[Reachy Mini Control](https://hf.co/reachy-mini/#/download)** to bring it online and update its firmware. See `.reference/reachy_mini/docs/source/platforms/`.
+1. Install **[Reachy Mini Control](https://hf.co/reachy-mini/#/download)** to bring it online and update its firmware. See `.reference/reachy_mini/docs/source/platforms/`.
 
 2. **Find the daemon URL:**
    - **Reachy Mini Lite** (USB-tethered, daemon runs on *your Mac*): `http://localhost:8000`.
@@ -152,9 +86,11 @@ With a daemon running on `localhost:8000`, run the app with `--robot` (and optio
    uv run reachy-chat --mode live --robot --robot-url http://reachy-mini.local:8000 --vision
    ```
 
-**What differs from the simulator:**
-- **Real motion and a real camera** — look-at-speaker physically turns the head/body, and `--vision` uses the robot's onboard camera frame.
-- **Hardware echo cancellation / barge-in** — the robot's **XVF3800** audio front-end does hardware AEC, so the mic doesn't hear Reachy's own TTS. On the physical robot, barge-in (cutting Reachy off mid-sentence) is feasible. On a bare Mac there is no hardware AEC, so use **headphones** to avoid the speaker self-triggering the mic. (Software AEC for Mac dev is future work; see `docs/FUTURE_WORK.md`.)
+## Setup Path B — Reachy Mini Simulator (no hardware)
+
+You can run the **full** app — including `--robot` (look-at-speaker, emotions) against a simulated robot using the **Reachy Mini Control** desktop app ([download](https://hf.co/reachy-mini/#/download)). 
+
+With a daemon running on `localhost:8000`, run the app with `--robot` (and optionally `--vision`) — see **Running it** below. (The voice pipeline itself runs fine with **no** daemon; you only need it for `--robot`/`--vision`.)
 
 ---
 
