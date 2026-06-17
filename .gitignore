@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Reference clones (upstream repos kept locally for study, not our code)
+.reference/
+
+# Models & large binary artifacts (pulled from HF at setup time)
+models/
+*.gguf
+*.safetensors
+*.bin
+*.npz
+*.pt
+
+# Local caches
+.cache/
+.hf_cache/
+
+# Bulk-generated benchmark artifacts (curated examples live elsewhere)
+benchmarks/results/raw/
+
+# OS
+.DS_Store
+.AppleDouble

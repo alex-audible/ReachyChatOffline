@@ -1,0 +1,270 @@
+"""ConversationApp — the real-time voice loop tying everything together.
+
+Flow (see docs/architecture.md): mic/file → InteractionMachine (Silero VAD + Smart-Turn
+endpoint, both interaction modes, barge-in) → STTEngine (streaming) → LLMEngine (warm,
+thinking off, clause streaming) → TTSEngine (streaming) → speaker. Robot motion (look-at-
+speaker, gestures) is optional and runs in its own decoupled loop — never on the latency path.
+
+Two drivers:
+  * ``run_wav(path)``  — offline, real-time-paced; measures the FULL "stop-talking → first-audio"
+    latency INCLUDING endpoint detection. Testable without a mic. (EXP-E2E-2)
+  * ``run_live()``     — mic + speaker, turns run in a worker thread so the frame pump keeps
+    feeding the barge-in detector. Needs a microphone.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import threading
+import time
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[3]  # project root (…/ReachyChatOffline)
+sys.path.insert(0, str(ROOT / "benchmarks"))
+
+from reachy_chat.audio import Callbacks, InteractionConfig, InteractionMachine, Mode, State  # noqa: E402
+from reachy_chat.pipeline.engines import LLMEngine, STTEngine, TTSEngine  # noqa: E402
+
+FRAME = 512  # 32 ms @ 16 kHz
+
+# TTS presets: name -> (repo, generate_kwargs)
+TTS_PRESETS = {
+    "kokoro": ("mlx-community/Kokoro-82M-bf16", {"voice": "af_heart", "lang_code": "a"}),
+    "chatterbox": ("mlx-community/chatterbox-turbo-mlx-q4", {"exaggeration": 0.6, "cfg_weight": 0.4}),
+}
+
+
+class _RobotLink:
+    """Drives RobotPresence (state cues + DOA look-at) + reply→emotion moves on the Reachy
+    daemon. Everything runs on the presence/motion-queue background threads, fully OFF the
+    voice latency path; every call is best-effort (never raises into the pipeline)."""
+
+    def __init__(self, base_url: str = "http://localhost:8000"):
+        from reachy_chat.robot import MotionQueue, PlayMoveCommand, ReachyClient
+        from reachy_chat.robot.expression import reply_to_move
+        from reachy_chat.robot.presence import RobotPresence
+        self._client = ReachyClient(base_url=base_url)
+        self._queue = MotionQueue(self._client)
+        self._presence = RobotPresence(client=self._client, queue=self._queue)
+        self._PlayMove = PlayMoveCommand
+        self._reply_to_move = reply_to_move
+
+    def start(self) -> None:
+        self._queue.start()
+        self._presence.start()
+
+    def stop(self) -> None:
+        try:
+            self._presence.stop()
+        finally:
+            self._queue.stop()
+
+    def on_state(self, state: str) -> None:
+        try:
+            self._presence.on_state(state)
+        except Exception:
+            pass
+
+    def express(self, reply: str) -> None:
+        """Play an emotion move matching the reply (interrupts ambient nods)."""
+        try:
+            mv = self._reply_to_move(reply)
+            if mv:
+                self._queue.enqueue(self._PlayMove(move_name=mv), interrupt=True)
+        except Exception:
+            pass
+
+
+class ConversationApp:
+    def __init__(self, llm_repo: str = "mlx-community/gemma-4-E2B-it-qat-4bit",
+                 tts: str = "kokoro", mode: Mode = Mode.ALWAYS_ON,
+                 robot: bool = False, robot_url: str = "http://localhost:8000"):
+        repo, kwargs = TTS_PRESETS.get(tts, TTS_PRESETS["kokoro"])
+        self.stt = STTEngine()
+        self.llm = LLMEngine(repo=llm_repo)
+        self.tts = TTSEngine(repo=repo, generate_kwargs=kwargs)
+        self.robot = _RobotLink(robot_url) if robot else None
+        self.machine = InteractionMachine(
+            InteractionConfig(mode=mode),
+            Callbacks(on_listen_start=self._on_listen_start,
+                      on_endpoint=lambda evt: None,   # state→THINKING handled by the driver
+                      on_barge_in=self._on_barge_in),
+        )
+        self._cancel = threading.Event()
+        self._capturing = False
+
+    # -- callbacks -----------------------------------------------------------
+    def _on_listen_start(self) -> None:
+        self.stt.start()
+        self._capturing = True
+        if self.robot is not None:
+            self.robot.on_state("listening")  # orient to speaker + attentive cue (decoupled)
+
+    def _on_barge_in(self) -> None:
+        self._cancel.set()
+
+    def warmup(self) -> None:
+        self.stt.warmup()
+        for _ in self.llm.stream_clauses("Hello"):
+            pass
+        list(self.tts.synth_stream("Hello there."))
+        self.machine.warmup()
+
+    # -- one turn: STT.finalize -> LLM clauses -> TTS -> play ----------------
+    def run_turn(self, speaker=None) -> dict:
+        self._cancel.clear()
+        self._capturing = False
+        transcript = self.stt.finalize()
+        if len(transcript.strip()) < 3:  # ignore noise / empty endpoints (don't reply to nothing)
+            self.machine.finish_speaking()
+            return {"transcript": transcript, "reply": "", "first_audio": None, "audio": []}
+        first_audio: float | None = None
+        clauses: list[str] = []
+        chunks: list[np.ndarray] = []
+        for clause in self.llm.stream_clauses(transcript, self._cancel):
+            if self._cancel.is_set():
+                break
+            clauses.append(clause)
+            for audio in self.tts.synth_stream(clause, self._cancel):
+                if self._cancel.is_set():
+                    break
+                if first_audio is None:
+                    first_audio = time.perf_counter()
+                    self.machine.begin_speaking()
+                    if self.robot is not None:
+                        self.robot.on_state("speaking")
+                if speaker is not None:
+                    speaker.play(audio)
+                else:
+                    chunks.append(audio)
+        reply = " ".join(clauses)
+        if self.robot is not None and reply:
+            self.robot.express(reply)  # emotion move matching the reply (decoupled)
+        self.machine.finish_speaking()
+        return {"transcript": transcript, "reply": reply,
+                "first_audio": first_audio, "audio": chunks}
+
+    # -- offline driver (testable, measures full latency incl. endpointing) --
+    def run_wav(self, path: str, realtime: bool = True) -> dict:
+        import soundfile as sf
+        from harness import find_end_of_speech
+        a, sr = sf.read(path, dtype="float32")
+        if a.ndim > 1:
+            a = a.mean(1)
+        assert sr == 16000, "prompt must be 16 kHz"
+        eos_n = int(find_end_of_speech(a, sr) * sr)
+        self.machine.reset()
+        start = time.perf_counter()
+        t_eos: float | None = None
+        for i in range(0, len(a) - FRAME, FRAME):
+            frame = a[i:i + FRAME]
+            if realtime:
+                target = start + i / sr
+                dt = target - time.perf_counter()
+                if dt > 0:
+                    time.sleep(dt)
+            if t_eos is None and i + FRAME >= eos_n:
+                t_eos = time.perf_counter()
+            state = self.machine.process_frame(frame)
+            if self._capturing:
+                self.stt.add_frame(frame)
+            if state is State.THINKING:
+                res = self.run_turn(speaker=None)
+                res["endpoint_to_first_audio_ms"] = None
+                if res["first_audio"] is not None and t_eos is not None:
+                    res["full_latency_ms"] = (res["first_audio"] - t_eos) * 1000
+                return res
+        return {"transcript": "", "reply": "", "first_audio": None, "audio": [],
+                "note": "no endpoint fired"}
+
+    # -- live driver (mic + speaker) -----------------------------------------
+    def run_live(self) -> None:  # pragma: no cover (needs a microphone)
+        from reachy_chat.pipeline.audio_io import MicStream, Speaker
+        import os
+        dbg = os.environ.get("REACHY_DEBUG_AUDIO")  # dump per-turn 16 kHz STT audio to /tmp
+        dbg_buf: list[np.ndarray] = []
+        turn_n = 0
+        print("Listening… (Ctrl-C to stop)", flush=True)
+        prev = self.machine.state
+        with MicStream() as mic, Speaker(sr=self.tts.sr) as speaker:
+            if self.robot is not None:
+                self.robot.start()
+            for frame in mic.frames():
+                state = self.machine.process_frame(frame)
+                if state is not prev:
+                    print(f"  [{prev.value} -> {state.value}]", flush=True)
+                    if self.robot is not None:
+                        self.robot.on_state(state.value)
+                    prev = state
+                if self._capturing:
+                    self.stt.add_frame(frame)
+                    if dbg:
+                        dbg_buf.append(frame.copy())
+                if state is State.THINKING:
+                    # Run the turn INLINE on this thread. MLX streams are thread-local, so MLX
+                    # inference must run on the same thread the models were loaded on — spawning a
+                    # worker thread per turn raises "no Stream(gpu, N) in current thread". (Barge-in
+                    # is deferred until STT/LLM/TTS run on a single persistent MLX worker thread.)
+                    res = self.run_turn(speaker=speaker)
+                    print(f"  you    > {res['transcript']!r}", flush=True)
+                    print(f"  reachy < {res['reply']!r}", flush=True)
+                    if dbg and dbg_buf:
+                        import soundfile as sf
+                        p = f"/tmp/reachy_turn_{turn_n}.wav"
+                        sf.write(p, np.concatenate(dbg_buf), 16000)
+                        print(f"  [debug: STT heard -> {p}]", flush=True)
+                    dbg_buf = []
+                    turn_n += 1
+                    speaker.wait()   # block until Reachy finishes speaking...
+                    mic.drain()      # ...THEN flush the mic so it doesn't hear its own voice
+                    prev = self.machine.state
+                    if self.robot is not None:
+                        self.robot.on_state("idle")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["live", "wav"], default="wav")
+    ap.add_argument("--wav", default=str(ROOT / "audio_samples/prompts/p3_vision.wav"))
+    ap.add_argument("--llm", default="mlx-community/gemma-4-E2B-it-qat-4bit")
+    ap.add_argument("--tts", default="kokoro", choices=list(TTS_PRESETS))
+    ap.add_argument("--wake", action="store_true", help="wake-word mode ('Hey Reachy')")
+    ap.add_argument("--speak", action="store_true", help="(wav mode) play the response aloud")
+    ap.add_argument("--robot", action="store_true", help="drive the Reachy daemon/sim (look-at + emotions)")
+    ap.add_argument("--robot-url", default="http://localhost:8000")
+    args = ap.parse_args()
+
+    app = ConversationApp(llm_repo=args.llm, tts=args.tts,
+                          mode=Mode.WAKE_WORD if args.wake else Mode.ALWAYS_ON,
+                          robot=args.robot, robot_url=args.robot_url)
+    print("Warming up…")
+    app.warmup()
+    if args.mode == "live":
+        try:
+            app.run_live()
+        finally:
+            if app.robot is not None:
+                app.robot.stop()
+    else:
+        res = app.run_wav(args.wav)
+        print(f"\ntranscript: {res['transcript']!r}")
+        print(f"reply     : {res['reply']!r}")
+        if res.get("full_latency_ms"):
+            print(f"\nFULL stop-talking → first-audio (incl. endpoint detection): "
+                  f"{res['full_latency_ms']:.0f} ms")
+        if args.speak and res.get("audio"):
+            import time
+            from reachy_chat.pipeline.audio_io import Speaker
+            print("playing response…", flush=True)
+            with Speaker(sr=app.tts.sr) as sp:
+                for ch in res["audio"]:
+                    sp.play(ch)
+                dur = sum(len(c) for c in res["audio"]) / app.tts.sr
+                time.sleep(dur + 0.8)  # let playback drain before closing the stream
+
+
+if __name__ == "__main__":
+    main()

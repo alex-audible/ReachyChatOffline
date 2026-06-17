@@ -1,0 +1,25 @@
+[project]
+name = "reachy-chat-offline"
+version = "0.0.1"
+description = "Fully-local, low-latency voice-to-voice conversational app for Reachy Mini on Apple Silicon"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "sounddevice>=0.4.6",
+]
+
+[project.optional-dependencies]
+# Component stacks are added as they are selected by research + benchmarks.
+# (e.g. mlx, mlx-lm, parakeet-mlx, mlx-audio, silero-vad, ...)
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
