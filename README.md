@@ -198,6 +198,36 @@ uv run reachy-chat --mode wav --wav audio_samples/prompts/p3_vision.wav --speak
 | `--wav <path>` | `audio_samples/prompts/p3_vision.wav` | (wav mode) prompt WAV — must be 16 kHz mono |
 | `--speak` | off | (wav mode) play the generated response aloud |
 
+## Voice cloning
+
+The Chatterbox voices (`chatterbox-turbo-8bit`, the default, and `chatterbox-4bit`) can **clone a voice** from a short reference clip. There are two ways to use it:
+
+**1. Mid-conversation — just ask.** While talking, say **"Hey Reachy, can you clone my voice?"** Reachy will:
+1. ask you to talk for ~10 seconds (your name, what you like doing for fun, favourite subject + foods),
+2. record you, clone your voice, then
+3. carry on the conversation **in your voice**.
+
+This works with any `chatterbox-*` voice; if you launched with `--tts kokoro`, it loads a Chatterbox model on the fly to do the clone.
+
+**2. From the command line — `--voice`.** Start already speaking in a cloned voice, from a reference WAV (~8–12 s of clean speech):
+
+```bash
+PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --voice path/to/reference.wav
+```
+
+Omit `--voice` for the model's built-in default voice.
+
+**Standalone demo (no conversation).** Record yourself and hear the clone read a few sentences back, without launching the full app:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/clone_voice_demo.py --play
+#   --ref some.wav    clone from a file instead of the mic
+#   --seconds 10      record longer than the default 8 s
+#   --model mlx-community/chatterbox-4bit   use the emotive 4-bit model instead
+```
+
+**Tips:** ~8–12 s of clean, expressive speech clones best — talk *with feeling*, since the clone copies your energy. On a Mac, run from a real terminal so the microphone works.
+
 ## First-run notes
 
 - **Models download from Hugging Face on first use** (Parakeet STT, Gemma 4 LLM, Kokoro TTS, Silero VAD, Smart-Turn) — **several GB total, one-time**, cached in `~/.cache/huggingface`. Subsequent runs are offline.
