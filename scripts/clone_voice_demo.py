@@ -98,10 +98,10 @@ def main() -> int:
                     help="seconds of mic audio to record (default 8)")
     ap.add_argument("--exaggeration", type=float, default=0.5,
                     help="emotion intensity 0..~1.5 (default 0.5)")
-    ap.add_argument("--model", type=str, default="mlx-community/chatterbox-8bit",
-                    help="Chatterbox repo to use. Default chatterbox-8bit (best clone fidelity + "
-                         "emotion knob). chatterbox-4bit is faster/smaller; the turbo models are "
-                         "for the fast default voice and do NOT clone.")
+    ap.add_argument("--model", type=str, default="mlx-community/chatterbox-turbo-8bit",
+                    help="Chatterbox repo to use. Default chatterbox-turbo-8bit (fastest, "
+                         "best-sounding clone; ignores --exaggeration). Use "
+                         "mlx-community/chatterbox-4bit if you want the emotion knob.")
     ap.add_argument("--play", action="store_true", help="play the cloned sentences aloud")
     args = ap.parse_args()
 

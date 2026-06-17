@@ -40,17 +40,14 @@ FRAME = 512  # 32 ms @ 16 kHz
 #   kokoro           — fast (~150 ms TTFA), named voices (af_heart, …) via the "voice" kwarg.
 #   chatterbox       — emotive + voice-CLONABLE (~0.9-1.1 s TTFA). exaggeration/cfg_weight are
 #                      real emotion knobs. Built-in default voice, or clone with --voice FILE.
-#   chatterbox-8bit  — standard 8-bit: higher fidelity than 4-bit (best clone quality) and keeps
-#                      the emotion knob, but slower (TTFA ~1.5 s cold / ~0.7 s warm). Same model
-#                      used for the "clone my voice" command, so the clone reuses it (no reload).
-#   chatterbox-turbo — MeanFlow few-step variant: ~25% faster (TTFA ~0.7-0.8 s, RTF ~0.22) and
-#                      peak-normalized to match loudness, BUT ignores exaggeration/cfg_weight
-#                      (no emotion knob). Same voice model (built-in default, or --voice clone).
+#   chatterbox-turbo — MeanFlow few-step variant: ~25% faster (TTFA ~0.7-0.8 s, RTF ~0.22),
+#                      peak-normalized to match loudness, and the best-sounding clone in
+#                      practice. Ignores exaggeration/cfg_weight (no emotion knob). It's also
+#                      the clone model, so cloning reuses it (no reload). Default voice, or clone.
 # All chatterbox* presets go through ChatterboxTTS; kokoro through the generic TTSEngine.
 TTS_PRESETS = {
     "kokoro": ("mlx-community/Kokoro-82M-bf16", {"voice": "af_heart", "lang_code": "a"}),
     "chatterbox": ("mlx-community/chatterbox-4bit", {"exaggeration": 0.5, "cfg_weight": 0.5}),
-    "chatterbox-8bit": ("mlx-community/chatterbox-8bit", {"exaggeration": 0.5, "cfg_weight": 0.5}),
     "chatterbox-turbo": ("mlx-community/chatterbox-turbo-8bit", {}),
 }
 
@@ -61,8 +58,9 @@ _CLONE_RE = re.compile(
     r"|\b(sound|talk|speak)\s+(just\s+)?like\s+me\b",
     re.IGNORECASE,
 )
-# Chatterbox model used for the clone (best fidelity + keeps the emotion knob).
-CLONE_REPO = "mlx-community/chatterbox-8bit"
+# Chatterbox model loaded for the clone when the active TTS isn't already Chatterbox (e.g.
+# launched with Kokoro). Turbo is fast and was the preferred-sounding clone in testing.
+CLONE_REPO = "mlx-community/chatterbox-turbo-8bit"
 CLONE_SECONDS = 12.0  # >= the 10 s the user asked for, with headroom
 CLONE_EXAGGERATION = 0.6  # a touch lively so the cloned voice has some life
 # Spoken prompts for the clone flow (the first two in the CURRENT voice, the last in the NEW one).
