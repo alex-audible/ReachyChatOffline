@@ -26,8 +26,9 @@ from reachy_chat.tts import apply_kokoro_fixes
 apply_kokoro_fixes()
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are Reachy, a small friendly desk robot having a natural spoken conversation. "
-    "Reply in one or two short, warm sentences that sound good read aloud. "
+    "You are Reachy, a friendly desk robot having a natural spoken conversation. "
+    "Reply warmly and conversationally — usually two to four sentences, and go longer when the "
+    "question genuinely calls for more detail, but stay focused and don't ramble. "
     "Remember what was said earlier in the conversation and stay on topic. "
     "Speak plainly: never use asterisks, emojis, markdown, bullet points, headings, stage "
     "directions, or action descriptions like *(tilts head)* — express everything in spoken words."
@@ -98,7 +99,7 @@ class LLMEngine:
     def __init__(self, repo: str = "mlx-community/gemma-4-E2B-it-qat-4bit",
                  system_prompt: str = DEFAULT_SYSTEM_PROMPT,
                  min_clause_chars: int = 8, long_clause_chars: int = 48,
-                 max_reply_tokens: int = 220, max_history_turns: int = 12):
+                 max_reply_tokens: int = 400, max_history_turns: int = 12):
         from mlx_lm import load
         from mlx_lm.models.cache import make_prompt_cache
         self.model, self.tok = load(repo)

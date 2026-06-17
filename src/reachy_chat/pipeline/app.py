@@ -81,12 +81,29 @@ class _RobotLink:
 class ConversationApp:
     def __init__(self, llm_repo: str = "mlx-community/gemma-4-E2B-it-qat-4bit",
                  tts: str = "kokoro", mode: Mode = Mode.ALWAYS_ON,
-                 robot: bool = False, robot_url: str = "http://localhost:8000"):
+                 robot: bool = False, robot_url: str = "http://localhost:8000",
+                 vision: bool = False,
+                 vision_model: str = "mlx-community/gemma-4-E4B-it-qat-4bit"):
         repo, kwargs = TTS_PRESETS.get(tts, TTS_PRESETS["kokoro"])
         self.stt = STTEngine()
         self.llm = LLMEngine(repo=llm_repo)
         self.tts = TTSEngine(repo=repo, generate_kwargs=kwargs)
         self.robot = _RobotLink(robot_url) if robot else None
+        self.vision = None
+        if vision:
+            try:
+                from reachy_chat.vision import VisionResponder
+                from reachy_chat.vision.frame_source import best_available_frame_source
+                self.vision = VisionResponder(frame_source=best_available_frame_source(),
+                                              model_name=vision_model)
+            except Exception as e:  # vision is optional — never block the voice app
+                print(f"[vision] disabled: {type(e).__name__}: {e}", flush=True)
+        self._model_info = {
+            "STT": "mlx-community/parakeet-tdt-0.6b-v2",
+            "LLM": llm_repo,
+            "TTS": repo,
+            "Vision": (vision_model if self.vision is not None else "off (--vision to enable)"),
+        }
         self.machine = InteractionMachine(
             InteractionConfig(mode=mode),
             Callbacks(on_listen_start=self._on_listen_start,
@@ -106,7 +123,13 @@ class ConversationApp:
     def _on_barge_in(self) -> None:
         self._cancel.set()
 
+    def print_models(self) -> None:
+        print("Models in use:", flush=True)
+        for role, name in self._model_info.items():
+            print(f"  {role:7s} {name}", flush=True)
+
     def warmup(self) -> None:
+        self.print_models()
         self.stt.warmup()
         for _ in self.llm.stream_clauses("Hello"):
             pass
@@ -124,7 +147,13 @@ class ConversationApp:
         first_audio: float | None = None
         clauses: list[str] = []
         chunks: list[np.ndarray] = []
-        for clause in self.llm.stream_clauses(transcript, self._cancel):
+        # Visual queries ("what do you see?") are answered from a camera frame via the VLM, not the
+        # text LLM. maybe_answer() is a fast heuristic that returns None for non-visual turns (no
+        # VLM load), so it adds negligible overhead otherwise. (A vision turn adds ~1s.)
+        vision_text = self.vision.maybe_answer(transcript) if self.vision is not None else None
+        clause_source = ([vision_text] if vision_text is not None
+                         else self.llm.stream_clauses(transcript, self._cancel))
+        for clause in clause_source:
             if self._cancel.is_set():
                 break
             clauses.append(clause)
@@ -235,11 +264,16 @@ def main() -> None:
     ap.add_argument("--speak", action="store_true", help="(wav mode) play the response aloud")
     ap.add_argument("--robot", action="store_true", help="drive the Reachy daemon/sim (look-at + emotions)")
     ap.add_argument("--robot-url", default="http://localhost:8000")
+    ap.add_argument("--vision", action="store_true",
+                    help="answer 'what do you see?' from the camera via Gemma 4 vision (adds ~1s)")
+    ap.add_argument("--vision-model", default="mlx-community/gemma-4-E4B-it-qat-4bit",
+                    help="VLM for vision (E4B = higher quality; E2B is faster/lighter)")
     args = ap.parse_args()
 
     app = ConversationApp(llm_repo=args.llm, tts=args.tts,
                           mode=Mode.WAKE_WORD if args.wake else Mode.ALWAYS_ON,
-                          robot=args.robot, robot_url=args.robot_url)
+                          robot=args.robot, robot_url=args.robot_url,
+                          vision=args.vision, vision_model=args.vision_model)
     print("Warming up…")
     app.warmup()
     if args.mode == "live":
