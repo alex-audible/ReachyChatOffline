@@ -254,6 +254,12 @@ class VisionResponder:
             self._vlm = VLM(name)
         return self._vlm
 
+    def warmup(self) -> None:
+        """Load the VLM weights now (at startup) rather than on the first visual query, so the
+        conversation never stalls mid-turn to load the model. The frame source stays lazy (it's
+        cheap, and we avoid holding the camera open until a visual query actually needs it)."""
+        self._get_vlm()
+
     def maybe_answer(self, transcript: str) -> Optional[str]:
         """Return a spoken answer if *transcript* is a visual query, else ``None``.
 

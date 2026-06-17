@@ -149,14 +149,14 @@ uv run reachy-chat --mode wav --wav audio_samples/prompts/p3_vision.wav --speak
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--mode {live,wav}` | `wav` | `live` = mic + speaker conversation; `wav` = offline file driver (measures full stop-talking → first-audio; source checkout only) |
+| `--mode {live,wav}` | `live` | `live` = mic + speaker conversation (default); `wav` = offline file driver (measures full stop-talking → first-audio; source checkout only) |
 | `--llm <repo>` | `mlx-community/gemma-4-E2B-it-qat-4bit` | Gemma 4 model for chat **and** vision. Default **E2B** = latency-first. Pass **`mlx-community/gemma-4-E4B-it-qat-4bit`** for a smarter (slower) model |
-| `--tts {kokoro,chatterbox-4bit,chatterbox-turbo-8bit}` | `kokoro` | TTS model (the preset name **is** the model). **kokoro** = fast default; **chatterbox-4bit** = emotive + voice-clonable; **chatterbox-turbo-8bit** = fastest + clonable (no emotion knob) |
+| `--tts {kokoro,chatterbox-4bit,chatterbox-turbo-8bit}` | `chatterbox-turbo-8bit` | TTS model (the preset name **is** the model). **chatterbox-turbo-8bit** (default) = best-sounding + voice-clonable (~0.7–0.8 s TTFA); **chatterbox-4bit** = emotive (exaggeration knob) + clonable; **kokoro** = lowest latency (~150 ms) for the strict ≤500 ms budget |
 | `--voice <wav>` | off | (chatterbox only) clone the voice from a reference WAV; omit for the built-in voice. You can also say "Hey Reachy, clone my voice" live |
 | `--exaggeration <0..~1.5>` | `0.5` | (chatterbox-4bit only) emotion intensity; turbo ignores it |
 | `--robot` | off | Drive the Reachy daemon/sim: look-at-speaker + emotion gestures (decoupled from the voice path) |
 | `--robot-url <url>` | `http://localhost:8000` | Daemon address (e.g. `http://reachy-mini.local:8000` for a Wireless unit) |
-| `--vision` | off | Answer "what do you see?" from the camera via Gemma 4 vision (adds ~1 s on vision turns) |
+| `--vision` / `--no-vision` | on | Answer "what do you see?" from the camera via Gemma 4 vision; the model is loaded at startup. On by default; `--no-vision` skips it (saves a second ~4–6 GB model — use on low-RAM machines) |
 | `--wake` | off | Wake-word mode — idle until "Hey Reachy" |
 | `--wav <path>` | `audio_samples/prompts/p3_vision.wav` | (wav mode) prompt WAV — must be 16 kHz mono |
 | `--speak` | off | (wav mode) play the generated response aloud |

@@ -117,9 +117,9 @@ class _RobotLink:
 
 class ConversationApp:
     def __init__(self, llm_repo: str = "mlx-community/gemma-4-E2B-it-qat-4bit",
-                 tts: str = "kokoro", mode: Mode = Mode.ALWAYS_ON,
+                 tts: str = "chatterbox-turbo-8bit", mode: Mode = Mode.ALWAYS_ON,
                  robot: bool = False, robot_url: str = "http://localhost:8000",
-                 vision: bool = False, vision_model: str | None = None,
+                 vision: bool = True, vision_model: str | None = None,
                  voice: str | None = None, exaggeration: float | None = None):
         repo, kwargs = TTS_PRESETS.get(tts, TTS_PRESETS["kokoro"])
         vision_model = vision_model or llm_repo  # vision uses the SAME Gemma 4 model as chat
@@ -141,17 +141,17 @@ class ConversationApp:
         self.vision = None
         if vision:
             try:
-                from reachy_chat.vision import VisionResponder
-                from reachy_chat.vision.frame_source import best_available_frame_source
-                self.vision = VisionResponder(frame_source=best_available_frame_source(),
-                                              model_name=vision_model)
+                # Light import (the heavy mlx-vlm load happens in warmup(), not here).
+                from reachy_chat.vision.responder import VisionResponder
+                self.vision = VisionResponder(model_name=vision_model)
             except Exception as e:  # vision is optional — never block the voice app
                 print(f"[vision] disabled: {type(e).__name__}: {e}", flush=True)
         self._model_info = {
             "STT": "mlx-community/parakeet-tdt-0.6b-v2",
             "LLM": llm_repo,
             "TTS": f"{repo}  (voice: {tts_voice})",
-            "Vision": (vision_model if self.vision is not None else "off (--vision to enable)"),
+            "Vision": (f"{vision_model}  (separate mlx-vlm model)" if self.vision is not None
+                       else "off (--no-vision)"),
         }
         self.machine = InteractionMachine(
             InteractionConfig(mode=mode),
@@ -187,6 +187,15 @@ class ConversationApp:
         for _ in self.llm.stream_clauses("Hello"):
             pass
         list(self.tts.synth_stream("Hello there."))
+        # Load the vision model now (not lazily on the first visual query) so nothing stalls
+        # mid-conversation. Degrade to no-vision if it can't load.
+        if self.vision is not None:
+            try:
+                print("  loading vision model…", flush=True)
+                self.vision.warmup()
+            except Exception as e:
+                print(f"[vision] warmup failed, disabling: {type(e).__name__}: {e}", flush=True)
+                self.vision = None
         self.machine.warmup()
 
     # -- one turn: STT.finalize -> LLM clauses -> TTS -> play ----------------
@@ -375,14 +384,17 @@ class ConversationApp:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["live", "wav"], default="wav")
+    ap.add_argument("--mode", choices=["live", "wav"], default="live",
+                    help="live = mic+speaker conversation (default); wav = offline file driver "
+                         "for benchmarking")
     ap.add_argument("--wav", default=str(ROOT / "audio_samples/prompts/p3_vision.wav"))
     ap.add_argument("--llm", default="mlx-community/gemma-4-E2B-it-qat-4bit",
                     help="Gemma 4 model for BOTH chat and vision (default: E2B, fast; "
                          "pass mlx-community/gemma-4-E4B-it-qat-4bit for a smarter, slower model)")
-    ap.add_argument("--tts", default="kokoro", choices=list(TTS_PRESETS),
-                    help="speech model: kokoro (fast) | chatterbox-4bit (emotive, clonable) | "
-                         "chatterbox-turbo-8bit (fastest, clonable)")
+    ap.add_argument("--tts", default="chatterbox-turbo-8bit", choices=list(TTS_PRESETS),
+                    help="speech model (default chatterbox-turbo-8bit): kokoro (lowest latency, "
+                         "~150 ms) | chatterbox-4bit (emotive, clonable) | "
+                         "chatterbox-turbo-8bit (best-sounding + clonable, ~0.7-0.8 s TTFA)")
     ap.add_argument("--voice", default=None,
                     help="(chatterbox only) reference WAV to clone the voice from; "
                          "omit for the built-in default voice")
@@ -392,8 +404,10 @@ def main() -> None:
     ap.add_argument("--speak", action="store_true", help="(wav mode) play the response aloud")
     ap.add_argument("--robot", action="store_true", help="drive the Reachy daemon/sim (look-at + emotions)")
     ap.add_argument("--robot-url", default="http://localhost:8000")
-    ap.add_argument("--vision", action="store_true",
-                    help="answer 'what do you see?' from the camera via Gemma 4 vision (adds ~1s)")
+    ap.add_argument("--vision", action=argparse.BooleanOptionalAction, default=True,
+                    help="camera vision ('what do you see?') via Gemma 4, loaded at startup. "
+                         "On by default; --no-vision skips it (saves a second ~4-6 GB model — "
+                         "use on low-RAM machines)")
     args = ap.parse_args()
 
     app = ConversationApp(llm_repo=args.llm, tts=args.tts,
