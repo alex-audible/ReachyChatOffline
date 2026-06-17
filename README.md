@@ -38,7 +38,6 @@ Run it from a **real Terminal** (Terminal.app / iTerm) so macOS can grant microp
 Common options:
 
 ```bash
---wake                                          # wait for "Hey Reachy" before listening
 --tts kokoro                                     # lowest-latency voice (~150 ms)
 --no-vision                                      # disable the camera (saves memory)
 --llm mlx-community/gemma-4-E4B-it-qat-4bit       # smarter, slower model
