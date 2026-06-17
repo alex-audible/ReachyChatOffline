@@ -17,9 +17,12 @@ Then clone and install:
 ```bash
 git clone https://github.com/alex-audible/ReachyChatOffline.git
 cd ReachyChatOffline
-uv venv               # creates .venv with Python 3.12
-uv pip install -e .   # installs all dependencies into .venv
+uv venv                   # creates .venv with Python 3.12
+uv pip install -e .       # installs all dependencies into .venv
+.venv/bin/hf auth login   # log in to Hugging Face (models download from there)
 ```
+
+The models (Parakeet, Gemma 4, Kokoro/Chatterbox, Silero, Smart-Turn) download from Hugging Face on first run — **several GB, one-time**, cached in `~/.cache/huggingface`. You must be logged in (a free [account](https://huggingface.co/join) + [token](https://huggingface.co/settings/tokens)); some Gemma models are gated, so accept the license once on the model page if prompted.
 
 ## Run
 
