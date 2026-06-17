@@ -4,6 +4,43 @@
 
 Talk to Reachy and it talks back, in about half a second, with the robot turning to look at whoever is speaking and reacting with emotion — all computed on-device.
 
+## Quick start
+
+After the one-time [setup](#getting-started), from the project directory:
+
+```bash
+cd ReachyChatOffline
+
+# Talk to Reachy — live mic, vision on, turbo voice, + robot embodiment:
+PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --robot
+```
+
+`--robot` expects the **Reachy Mini daemon at `http://localhost:8000`**. Start a simulator daemon in another terminal first:
+
+```bash
+.venv/bin/reachy-mini-daemon --mockup-sim      # headless mock daemon on localhost:8000
+```
+
+(For a physical **Wireless** robot, point at it instead with `--robot-url http://reachy-mini.local:8000`.)
+
+Common variations:
+
+```bash
+# Voice only, no robot:
+PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app
+
+# Lowest-latency voice (Kokoro ~150 ms) instead of the turbo voice:
+PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --tts kokoro
+
+# Low-RAM machine — skip the second (vision) model:
+PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --no-vision
+
+# Wake-word mode — idle until "Hey Reachy":
+PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --wake
+```
+
+Run it in a **real terminal** (Terminal.app / iTerm) so macOS grants microphone access. First launch downloads models and warms up (STT + LLM + TTS + vision), so judge responsiveness from the second turn on. Mid-conversation, say **"Hey Reachy, can you clone my voice?"** to switch to a clone of your voice.
+
 ## Features
 
 - **Voice-to-voice, fully local** — speech in, speech out, with everything (STT, LLM, TTS, VAD) running on your Mac's GPU via MLX. Nothing is sent to a server.
