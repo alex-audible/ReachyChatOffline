@@ -2,17 +2,54 @@
 name = "reachy-chat-offline"
 version = "0.0.1"
 description = "Fully-local, low-latency voice-to-voice conversational app for Reachy Mini on Apple Silicon"
+readme = "README.md"
 requires-python = ">=3.10,<3.13"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Alex Jenkins" }]
+keywords = ["reachy-mini", "voice-assistant", "mlx", "apple-silicon", "speech", "robotics"]
+
+# Runtime dependencies. Floors are conservative (the versions verified in the working
+# .venv are newer); MLX wheels are Apple-Silicon only, so this project installs only on
+# arm64 macOS. Curated from `pip freeze` + an import sweep of src/ (transitive-only deps
+# such as mlx-metal, librosa, scipy, espeakng-loader are pulled in automatically).
 dependencies = [
+    # Audio I/O + DSP
     "numpy>=1.26",
     "soundfile>=0.12",
     "sounddevice>=0.4.6",
+    "soxr>=0.5",
+    # MLX inference stack (Apple Silicon / Metal)
+    "mlx>=0.28",
+    "mlx-lm>=0.28",           # LLM (Gemma 4 E2B/E4B)
+    "mlx-audio>=0.4",         # TTS (Kokoro)
+    "mlx-vlm>=0.3",           # vision (Gemma 4 webcam frame)
+    "parakeet-mlx>=0.5",      # STT (parakeet-tdt-0.6b, streaming)
+    "misaki[en]>=0.9",        # Kokoro English phonemizer
+    # VAD + endpointing + wake word
+    "silero-vad>=6.0",        # Silero VAD v6 (gate)
+    "onnxruntime>=1.20",      # Smart-Turn v3 endpointer
+    "torch>=2.2",             # Silero VAD backend
+    "livekit-wakeword>=0.2",  # "Hey Reachy" wake word
+    # Model loading + transformers utilities
+    "transformers>=4.44",
+    "huggingface-hub>=0.24",
+    # Vision frame handling
+    "pillow>=10",
+    "opencv-python>=4.9",
+    # Robot SDK + REST client
+    "reachy-mini>=1.8",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]
-# Component stacks are added as they are selected by research + benchmarks.
-# (e.g. mlx, mlx-lm, parakeet-mlx, mlx-audio, silero-vad, ...)
+# MuJoCo physics simulator for the Reachy Mini daemon (`reachy-mini-daemon --sim`).
+# The headless `--mockup-sim` path needs nothing extra. On macOS MuJoCo can be finicky
+# under uv; see the README simulator section.
+sim = ["reachy-mini[mujoco]>=1.8"]
 dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+reachy-chat = "reachy_chat.pipeline.app:main"
 
 [build-system]
 requires = ["setuptools>=68"]

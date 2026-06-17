@@ -22,8 +22,13 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[3]  # project root (…/ReachyChatOffline)
-sys.path.insert(0, str(ROOT / "benchmarks"))
+ROOT = Path(__file__).resolve().parents[3]  # project root (…/ReachyChatOffline) when run from source
+# `harness` (used only by the offline run_wav driver) lives in benchmarks/, which exists in a
+# source checkout but NOT in an installed package. Add it to sys.path only when present so the
+# live app (`reachy-chat --mode live`) works after `uv pip install -e .` without the benchmarks dir.
+_BENCH = ROOT / "benchmarks"
+if _BENCH.is_dir():
+    sys.path.insert(0, str(_BENCH))
 
 from reachy_chat.audio import Callbacks, InteractionConfig, InteractionMachine, Mode, State  # noqa: E402
 from reachy_chat.pipeline.engines import LLMEngine, STTEngine, TTSEngine  # noqa: E402
@@ -184,7 +189,14 @@ class ConversationApp:
     # -- offline driver (testable, measures full latency incl. endpointing) --
     def run_wav(self, path: str, realtime: bool = True) -> dict:
         import soundfile as sf
-        from harness import find_end_of_speech
+        try:
+            from harness import find_end_of_speech
+        except ImportError as e:  # benchmarks/ is only present in a source checkout
+            raise RuntimeError(
+                "--mode wav needs the benchmarks/ harness, which ships only with the source "
+                "checkout (not the installed package). Run from a clone of the repo, or use "
+                "`reachy-chat --mode live`."
+            ) from e
         a, sr = sf.read(path, dtype="float32")
         if a.ndim > 1:
             a = a.mean(1)
