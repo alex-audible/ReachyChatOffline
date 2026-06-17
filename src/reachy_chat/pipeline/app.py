@@ -36,19 +36,19 @@ from reachy_chat.pipeline.engines import LLMEngine, STTEngine, TTSEngine  # noqa
 
 FRAME = 512  # 32 ms @ 16 kHz
 
-# TTS presets: name -> (repo, generate_kwargs).
-#   kokoro           — fast (~150 ms TTFA), named voices (af_heart, …) via the "voice" kwarg.
-#   chatterbox       — emotive + voice-CLONABLE (~0.9-1.1 s TTFA). exaggeration/cfg_weight are
-#                      real emotion knobs. Built-in default voice, or clone with --voice FILE.
-#   chatterbox-turbo — MeanFlow few-step variant: ~25% faster (TTFA ~0.7-0.8 s, RTF ~0.22),
-#                      peak-normalized to match loudness, and the best-sounding clone in
-#                      practice. Ignores exaggeration/cfg_weight (no emotion knob). It's also
-#                      the clone model, so cloning reuses it (no reload). Default voice, or clone.
+# TTS presets: preset name -> (repo, generate_kwargs). Preset names mirror the model repo
+# (minus the mlx-community/ prefix) so --tts says exactly which model you get.
+#   kokoro               — Kokoro-82M-bf16: fast (~150 ms TTFA), named voices (af_heart, …).
+#   chatterbox-4bit      — chatterbox-4bit: emotive + voice-CLONABLE (~0.9-1.1 s TTFA);
+#                          exaggeration/cfg_weight are real emotion knobs. Default voice or --voice.
+#   chatterbox-turbo-8bit — chatterbox-turbo-8bit: MeanFlow few-step, ~25% faster (TTFA ~0.7-0.8 s,
+#                          RTF ~0.22), peak-normalized, best-sounding clone. Ignores the emotion
+#                          knob. Also the clone model, so cloning reuses it (no reload).
 # All chatterbox* presets go through ChatterboxTTS; kokoro through the generic TTSEngine.
 TTS_PRESETS = {
     "kokoro": ("mlx-community/Kokoro-82M-bf16", {"voice": "af_heart", "lang_code": "a"}),
-    "chatterbox": ("mlx-community/chatterbox-4bit", {"exaggeration": 0.5, "cfg_weight": 0.5}),
-    "chatterbox-turbo": ("mlx-community/chatterbox-turbo-8bit", {}),
+    "chatterbox-4bit": ("mlx-community/chatterbox-4bit", {"exaggeration": 0.5, "cfg_weight": 0.5}),
+    "chatterbox-turbo-8bit": ("mlx-community/chatterbox-turbo-8bit", {}),
 }
 
 # --- Voice cloning by voice command ("Hey Reachy, can you clone my voice?") --------------
@@ -381,7 +381,8 @@ def main() -> None:
                     help="Gemma 4 model for BOTH chat and vision (default: E2B, fast; "
                          "pass mlx-community/gemma-4-E4B-it-qat-4bit for a smarter, slower model)")
     ap.add_argument("--tts", default="kokoro", choices=list(TTS_PRESETS),
-                    help="speech engine: kokoro (fast) or chatterbox (emotive + voice-clonable)")
+                    help="speech model: kokoro (fast) | chatterbox-4bit (emotive, clonable) | "
+                         "chatterbox-turbo-8bit (fastest, clonable)")
     ap.add_argument("--voice", default=None,
                     help="(chatterbox only) reference WAV to clone the voice from; "
                          "omit for the built-in default voice")
