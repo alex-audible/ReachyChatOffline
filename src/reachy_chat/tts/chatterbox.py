@@ -143,6 +143,7 @@ class ChatterboxTTS:
         exaggeration: float = 0.5,
         cfg_weight: float = 0.5,
         temperature: float = 0.8,
+        peak_norm: float | None = 0.97,
         model: Any | None = None,
     ):
         self.repo = repo
@@ -152,6 +153,10 @@ class ChatterboxTTS:
         self.exaggeration = float(exaggeration)
         self.cfg_weight = float(cfg_weight)
         self.temperature = float(temperature)
+        # Peak-normalize each chunk to this level. The turbo model renders ~2x quieter
+        # (peak ~0.5 vs ~0.97) than chatterbox-4bit; this brings them to parity without
+        # clipping. None disables it. Near-no-op for already-loud models.
+        self.peak_norm = peak_norm
         # The built-in conditionals loaded from conds.safetensors; restored by set_voice(None).
         self._default_conds = getattr(self.model, "_conds", None)
         self._lock = threading.Lock()  # generate() mutates shared model state; serialize it.
@@ -196,6 +201,17 @@ class ChatterboxTTS:
             return False
 
     # -- synthesis ---------------------------------------------------------------------
+    def _normalize(self, audio: np.ndarray) -> np.ndarray:
+        """Peak-normalize to ``self.peak_norm`` (only scales UP quiet output; capped to avoid
+        amplifying near-silence). No-op if ``peak_norm`` is None or the chunk is ~silent."""
+        if self.peak_norm is None:
+            return audio
+        peak = float(np.abs(audio).max()) if audio.size else 0.0
+        if peak < 0.02:  # near-silent: leave as-is (don't blow up noise)
+            return audio
+        gain = min(self.peak_norm / peak, 8.0)
+        return (audio * gain).astype(np.float32)
+
     def _generate_one(self, sentence: str, **overrides: Any) -> np.ndarray:
         """Synthesize a single sentence with the current voice; returns 1-D float32.
 
@@ -217,7 +233,7 @@ class ChatterboxTTS:
                     chunks.append(np.array(au).reshape(-1).astype(np.float32))
             if not chunks:
                 return np.zeros(1, np.float32)
-            return np.concatenate(chunks)
+            return self._normalize(np.concatenate(chunks))
         except Exception as e:
             logger.error("Chatterbox: synth failed for %r (%s); emitting silence",
                          sentence[:60], e)

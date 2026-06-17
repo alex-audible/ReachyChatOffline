@@ -36,13 +36,17 @@ from reachy_chat.pipeline.engines import LLMEngine, STTEngine, TTSEngine  # noqa
 FRAME = 512  # 32 ms @ 16 kHz
 
 # TTS presets: name -> (repo, generate_kwargs).
-#   kokoro     — fast (~150 ms TTFA), named voices (af_heart, …) via the "voice" kwarg.
-#   chatterbox — higher-quality + emotive + voice-CLONABLE (~1 s TTFA, no sub-sentence
-#                streaming). No named voices: the built-in default voice, or clone from a
-#                reference clip with --voice FILE. exaggeration/cfg_weight are emotion knobs.
+#   kokoro           — fast (~150 ms TTFA), named voices (af_heart, …) via the "voice" kwarg.
+#   chatterbox       — emotive + voice-CLONABLE (~0.9-1.1 s TTFA). exaggeration/cfg_weight are
+#                      real emotion knobs. Built-in default voice, or clone with --voice FILE.
+#   chatterbox-turbo — MeanFlow few-step variant: ~25% faster (TTFA ~0.7-0.8 s, RTF ~0.22) and
+#                      peak-normalized to match loudness, BUT ignores exaggeration/cfg_weight
+#                      (no emotion knob). Same voice model (built-in default, or --voice clone).
+# All chatterbox* presets go through ChatterboxTTS; kokoro through the generic TTSEngine.
 TTS_PRESETS = {
     "kokoro": ("mlx-community/Kokoro-82M-bf16", {"voice": "af_heart", "lang_code": "a"}),
     "chatterbox": ("mlx-community/chatterbox-4bit", {"exaggeration": 0.5, "cfg_weight": 0.5}),
+    "chatterbox-turbo": ("mlx-community/chatterbox-turbo-8bit", {}),
 }
 
 
@@ -100,7 +104,7 @@ class ConversationApp:
         self.llm = LLMEngine(repo=llm_repo)
         # Chatterbox is a different engine (emotive + voice-cloning); Kokoro et al. go through
         # the generic mlx-audio TTSEngine. Both expose the same synth_stream/synth/.sr contract.
-        if tts == "chatterbox":
+        if tts.startswith("chatterbox"):
             from reachy_chat.tts.chatterbox import ChatterboxTTS
             exa = exaggeration if exaggeration is not None else kwargs.get("exaggeration", 0.5)
             self.tts = ChatterboxTTS(repo=repo, ref_audio=voice, exaggeration=exa,
