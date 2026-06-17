@@ -50,6 +50,8 @@ coordinator should see), but the helper :func:`try_load_chatterbox` swallows tha
 
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 import re
 import threading
@@ -61,6 +63,21 @@ import mlx.core as mx
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def _silence_mlx_audio_logging() -> None:
+    """Quiet mlx-audio's chatty WARNING/INFO logging (e.g. the turbo backend's repeated
+    'CFG, min_p and exaggeration are not supported by Turbo version' warning) so it doesn't
+    pollute the conversation console. Errors still surface."""
+    logging.getLogger("mlx_audio").setLevel(logging.ERROR)
+
+
+@contextlib.contextmanager
+def _suppress_stdout():
+    """Swallow raw print() output from the mlx-audio backend during a call (e.g. the turbo
+    vocoder's 'S3 Token -> Mel Inference...' print). stderr is untouched, so real errors show."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
 
 # The verified-working repo. 8-bit / fp16 siblings share the layout if higher quality is
 # wanted at the cost of size/speed.
@@ -109,6 +126,7 @@ def load_chatterbox(repo: str = DEFAULT_REPO):
     """
     from mlx_audio.tts.utils import get_model_path, load_model
 
+    _silence_mlx_audio_logging()  # quiet the turbo backend's repeated WARNING chatter
     p = get_model_path(repo)
     path = p[0] if isinstance(p, tuple) else p
     logger.info("Chatterbox: loading %s ...", repo)
@@ -230,7 +248,7 @@ class ChatterboxTTS:
         }
         kw.update(overrides)
         try:
-            with self._lock:
+            with self._lock, _suppress_stdout():
                 chunks = []
                 for seg in self.model.generate(text=sentence, **kw):
                     au = getattr(seg, "audio", seg)
