@@ -1,6 +1,6 @@
 # ReachyChatOffline
 
-**A fully-local, low-latency, voice-to-voice conversational app for the [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) robot — running entirely on Apple Silicon (MLX/Metal). No cloud, no API keys, no data leaving your Mac.**
+**A fully-local, low-latency, voice-to-voice conversational app for the [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) robot — running entirely on Apple Silicon (MLX/Metal). No cloud, no API keys, everything happens on your machine.**
 
 Talk to Reachy and it talks back, in under a second. Runs on Apple Silicon Macs (M2/M3/M4/M5) with 16 GB+ RAM.
 
