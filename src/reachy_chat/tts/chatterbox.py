@@ -1,90 +1,58 @@
-"""Chatterbox-Turbo (q4) loader + synth wrapper for the Reachy voice pipeline.
+"""Chatterbox (MLX, 4-bit) emotive + voice-cloning TTS for the Reachy pipeline.
 
-STATUS (2026-06-17): **BLOCKED — does not produce usable audio.** The wrapper below
-correctly loads the q4 repo via the ``chatterbox_turbo`` backend (T3 text->token model
-loads and runs at RTF ~0.6 on M3), but the **S3Gen vocoder weights in this repo do not
-match the module layout of mlx-audio's S3Gen implementation**, so the audio decoder runs
-on random init and emits near-silence (RMS ~0.0012, ~-58 dBFS). See "THE BLOCKER" below.
-
-----------------------------------------------------------------------------------------
-WHAT WORKS — the load incantation
-----------------------------------------------------------------------------------------
-``mlx-community/chatterbox-turbo-mlx-q4`` ships a TURBO file layout
-(``t3_turbo_v1.safetensors``, ``model.safetensors`` [= quantized T3], ``s3gen.safetensors``,
-``s3gen_meanflow.safetensors``, ``ve.safetensors``) but its ``config.json`` declares
-``model_type: "chatterbox"``. Two problems with ``mlx_audio.tts.utils.load_model``:
-
-  1. **Routing.** ``get_model_class`` actually *does* reach the ``chatterbox_turbo`` backend
-     here (the repo *name* contains "turbo"), but the stock loader globs **all** ``*.safetensors``
-     into one dict with no per-file prefixing, so the unprefixed keys (``tfmr.*``, ``tokenizer.*``,
-     ``similarity_*``) land in "other_weights" -> "Unrecognized weight keys" and never reach
-     the t3 / s3gen / ve sub-modules.
-  2. **Conditionals.** ``ChatterboxTurboTTS.post_load_hook`` ends with
-     ``raise FileNotFoundError("conds.safetensors not found")`` and this repo has no
-     ``conds.safetensors`` — so loading aborts before generation even with a ref voice.
-
-This wrapper fixes both by building the model directly:
-  * instantiate ``ChatterboxTurboTTS({"quantization": {...}})`` (creates T3 / S3Gen(meanflow) / VE);
-  * load each component file with its correct top-level prefix
-    (``model.safetensors`` -> ``t3.``, ``s3gen_meanflow.safetensors`` -> ``s3gen.``,
-    ``ve.safetensors`` -> ``ve.``), run the model's own ``sanitize``, then ``apply_quantization``
-    (only T3 is q4 in this repo) and ``load_weights(strict=False)``;
-  * load the text tokenizer + the ``mlx-community/S3TokenizerV2`` speech tokenizer
-    (post_load_hook's other side effects), but **skip** the conds.safetensors requirement;
-  * derive conditionals at generate time from a reference WAV via ``ref_audio=`` (zero-shot
-    voice cloning) — no conds.safetensors needed.
-
-``Model.generate(text, ref_audio=..., temperature=...)`` yields ``GenerationResult`` objects
-with ``.audio`` / ``.sample_rate`` (24 kHz), matching ``benchmarks/bench_tts.py`` and the
-``TTSEngine.synth_stream`` contract in ``pipeline/engines.py``. NOTE: Turbo **ignores**
-``exaggeration`` / ``cfg_weight`` (the backend logs a warning and drops them) — the t3 config
-has ``emotion_adv: false`` — so the "exaggeration knob" is a no-op for this model.
+STATUS (2026-06-17): **WORKING.** ``mlx-community/chatterbox-4bit`` loads cleanly via
+mlx-audio's *standard* ``chatterbox`` backend and produces real, intelligible audio
+(default RMS ~0.13; cloned-voice RMS ~0.04), RTF ~0.3-0.5 after warmup, TTFA ~0.7 s for a
+short clause, ~1.7 GB peak GPU. Verified end-to-end: synthesize -> transcribe with
+parakeet -> transcript matches the input text, for the built-in voice, a cloned voice, and
+an exaggerated-emotion render.
 
 ----------------------------------------------------------------------------------------
-THE BLOCKER — S3Gen weight-layout mismatch (vocoder runs on random init)
+WHY THIS REPO (and not the q4 *turbo* one that failed before)
 ----------------------------------------------------------------------------------------
-The decoder that turns speech tokens into a waveform (``s3gen.flow.decoder.estimator.*`` in
-the repo file) is exported in ResembleAI's ORIGINAL nested module layout, e.g.::
+The earlier attempt, ``mlx-community/chatterbox-turbo-mlx-q4``, shipped its S3Gen vocoder
+in ResembleAI's ORIGINAL nested module layout
+(``flow.decoder.estimator.down_blocks.0.0.mlp.1.weight`` ...), of which only ~40% matched
+mlx-audio's re-implemented S3Gen, so the CFM decoder stayed random-init -> near-silence.
 
-    flow.decoder.estimator.down_blocks.0.0.mlp.1.weight
+``mlx-community/chatterbox-4bit`` was converted *with mlx-audio's own converter*, so its
+weights use mlx-audio's NATIVE S3Gen layout
+(``s3gen.flow.decoder.estimator.down_blocks_0.resnet.block1.conv.conv.weight`` ...). The
+single ``model.safetensors`` carries ``ve.*`` / ``t3.*`` / ``s3gen.*`` prefixes exactly as
+the standard ``chatterbox.Model`` expects, plus ``config.json`` (``model_type:
+"chatterbox"``, 4-bit affine quant), ``tokenizer.json``, and a built-in default voice in
+``conds.safetensors``. So ``mlx_audio.tts.utils.load_model`` "just works" here -- no custom
+weight surgery, no ``conds.safetensors`` workaround. The 8-bit / fp16 siblings
+(``chatterbox-8bit`` / ``chatterbox-fp16``) share the layout and would also load; 4-bit is
+the smallest + fastest and was the verified choice.
 
-whereas mlx-audio's re-implemented S3Gen expects a DIFFERENT module tree, e.g.::
+----------------------------------------------------------------------------------------
+API
+----------------------------------------------------------------------------------------
+``ChatterboxTTS`` mirrors ``pipeline/engines.py:TTSEngine`` so it can drop into the live
+pipeline, and adds zero-shot voice cloning:
 
-    decoder.estimator.down_blocks.0.resnet.block1.block.0.conv.conv.weight
+  * ``set_voice(ref_audio)`` -- clone a voice from a reference WAV path / float array /
+    ``mx.array`` -> conditionals; subsequent synth speaks in that voice. ``set_voice(None)``
+    restores the built-in default voice.
+  * ``synth_stream(text)`` -- yields float32 1-D chunks (one per sentence) so playback can
+    start on the first clause.
+  * ``synth(text)`` -- whole utterance as one float32 array.
+  * ``sample_rate`` -- 24000.
+  * ``exaggeration`` (0-~1.5) is a real emotion knob on this model -- higher = more
+    expressive/animated. ``cfg_weight`` trades adherence vs. expressiveness.
 
-These are not reconcilable by prefix/key renaming — the block decomposition itself differs.
-Measured coverage after the model's own ``sanitize`` (every meanflow / non-meanflow combo):
-
-    S3Gen: 891 / 2183 loadable params get real weights  (~40%)
-            -> the ENTIRE decoder.estimator CFM network stays at random init.
-    VE:    4 / 13 params matched.
-
-Empirical confirmation (kokoro_neutral.wav as 6.6 s reference voice):
-    "Oh wow, that's amazing news..."  -> 3.36 s @ 24 kHz, RTF 0.62, but
-    RMS 0.0012 / max 0.004 / ZCR 0.30  == near-silence/noise, NOT speech.
-
-So the T3 stage works and is fast; the vocoder cannot, because its weights aren't present in
-a layout this backend can consume. This is a packaging mismatch between the q4 repo
-(``mlx-audio 0.2.7`` conversion, per its README) and the installed mlx-audio's
-``chatterbox_turbo`` S3Gen. ``from_local`` in the backend is also unusable here (it reads only
-``model.safetensors`` with ``t3.``/``s3gen.``/``ve.`` prefixes that this repo's files don't have,
-and never quantizes, so it can't read the q4 T3 either).
-
-POSSIBLE PATHS FORWARD (out of scope of "work in src/reachy_chat/tts"):
-  * use a NON-q4 chatterbox-turbo MLX repo whose S3Gen matches this mlx-audio version, or
-  * convert ResembleAI/chatterbox-turbo with the *installed* mlx-audio's converter so the
-    S3Gen module tree matches, and capture/ship a ``conds.safetensors`` (or keep ref_audio), or
-  * write an S3Gen weight remapper (flow.decoder.estimator.*  ->  decoder.estimator.resnet.*)
-    — large, brittle, and effectively re-implements the converter.
-
-Until then, ``load_chatterbox_turbo`` raises ``ChatterboxTurboUnavailable`` by default so the
-pipeline fails loudly rather than speaking silence. Pass ``allow_broken_vocoder=True`` to get
-the (silent) model for debugging.
+Robustness contract (same as the rest of the pipeline's engines): synth NEVER raises into
+the caller. On any per-sentence failure it logs and yields silence, so a bad clause can't
+crash the conversation loop. Construction CAN raise (a missing model is a setup error the
+coordinator should see), but the helper :func:`try_load_chatterbox` swallows that too.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -94,198 +62,207 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REPO = "mlx-community/chatterbox-turbo-mlx-q4"
-# A clean >5 s reference clip already in-repo, usable as a stand-in cloning voice.
+# The verified-working repo. 8-bit / fp16 siblings share the layout if higher quality is
+# wanted at the cost of size/speed.
+DEFAULT_REPO = "mlx-community/chatterbox-4bit"
+SAMPLE_RATE = 24000
+
+# A clean ~6.5 s reference clip already in-repo, handy as a stand-in cloning voice for demos.
 DEFAULT_REF_AUDIO = "audio_samples/tts_outputs/kokoro_neutral.wav"
-S3TOKENIZER_REPO = "mlx-community/S3TokenizerV2"
 
-# Files that carry real (loadable) weights, mapped to the component prefix the backend's
-# sanitize()/load_weights() route by. model.safetensors is the q4-quantized T3.
-_COMPONENT_FILES = {
-    "model.safetensors": "t3.",
-    "s3gen_meanflow.safetensors": "s3gen.",
-    "ve.safetensors": "ve.",
-}
-# Fraction of S3Gen vocoder params that must receive real (non-init) weights for output to be
-# anything other than noise. The q4 repo currently yields ~0.40; see module docstring.
-_MIN_S3GEN_COVERAGE = 0.90
+# Split on sentence boundaries so streaming yields one chunk per sentence (low TTFA).
+_SENT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
-class ChatterboxTurboUnavailable(RuntimeError):
-    """Raised when the q4 turbo repo cannot produce usable audio (vocoder layout mismatch)."""
+def _load_audio_array(ref_audio: str | Path | np.ndarray | mx.array, sr: int) -> mx.array:
+    """Coerce a reference into a 1-D ``mx.array`` at ``sr`` (24 kHz).
+
+    Accepts a file path (any rate -> resampled+mono by mlx-audio's loader), a numpy/MLX
+    array already at ``sr``, or an MLX array. Raises ValueError on empty input.
+    """
+    from mlx_audio.utils import load_audio
+
+    if isinstance(ref_audio, (str, Path)):
+        wav = load_audio(str(ref_audio), sample_rate=sr)
+    elif isinstance(ref_audio, np.ndarray):
+        wav = mx.array(np.asarray(ref_audio, dtype=np.float32).reshape(-1))
+    elif isinstance(ref_audio, mx.array):
+        wav = ref_audio.reshape(-1)
+    else:  # pragma: no cover - defensive
+        raise TypeError(f"unsupported ref_audio type: {type(ref_audio)!r}")
+    if wav.size == 0:
+        raise ValueError("reference audio is empty")
+    return wav
 
 
-def _resolve_repo_path(repo: str) -> Path:
-    from mlx_audio.tts.utils import get_model_path
+def load_chatterbox(repo: str = DEFAULT_REPO):
+    """Load the Chatterbox MLX model via mlx-audio's standard ``chatterbox`` backend.
+
+    Downloads from the Hub on first use (incl. the shared ``mlx-community/S3TokenizerV2``
+    speech tokenizer), loads the prefixed ``ve.*``/``t3.*``/``s3gen.*`` weights, the text
+    tokenizer, and the built-in ``conds.safetensors`` default voice. Returns the raw
+    ``Model`` (with ``.generate`` / ``.prepare_conditionals`` / ``.sample_rate``); wrap it in
+    :class:`ChatterboxTTS` for the pipeline interface.
+
+    May raise (download/Metal/missing-file) -- a genuine setup failure the caller should see.
+    Use :func:`try_load_chatterbox` if you want a never-raising variant.
+    """
+    from mlx_audio.tts.utils import get_model_path, load_model
 
     p = get_model_path(repo)
-    return Path(p[0] if isinstance(p, tuple) else p)
-
-
-def _s3gen_coverage(model) -> float:
-    """Fraction of S3Gen's loadable params whose values were actually loaded (not random init)."""
-    from mlx.utils import tree_flatten
-
-    init_generated = {
-        "encoder.embed.pos_enc.pe",
-        "encoder.up_embed.pos_enc.pe",
-        "mel2wav.stft_window",
-        "trim_fade",
-    }
-    params = {k: v for k, v in tree_flatten(model.s3gen.parameters())}
-    loadable = [k for k in params if k not in init_generated]
-    if not loadable:
-        return 0.0
-    # A param left at init is ~zero-mean random; loaded conv/linear weights are too, so we can't
-    # detect "loaded" purely by stats. Instead recompute the matched set from the source files.
-    return _measured_s3gen_match_fraction(model)
-
-
-def _measured_s3gen_match_fraction(model) -> float:
-    """Re-derive how many S3Gen params the repo file can supply, via the model's own sanitize."""
-    from mlx.utils import tree_flatten
-
-    repo_path = Path(model.local_path) if model.local_path else None
-    if repo_path is None:
-        return 0.0
-    f = repo_path / "s3gen_meanflow.safetensors"
-    if not f.exists():
-        return 0.0
-    weights = dict(mx.load(str(f)))
-    sanitized = model.s3gen.sanitize(weights) if hasattr(model.s3gen, "sanitize") else weights
-    init_generated = {
-        "encoder.embed.pos_enc.pe",
-        "encoder.up_embed.pos_enc.pe",
-        "mel2wav.stft_window",
-        "trim_fade",
-    }
-    params = {k for k, _ in tree_flatten(model.s3gen.parameters())}
-    loadable = params - init_generated
-    matched = set(sanitized) & loadable
-    return len(matched) / len(loadable) if loadable else 0.0
-
-
-def load_chatterbox_turbo(
-    repo: str = DEFAULT_REPO,
-    ref_audio: str | None = DEFAULT_REF_AUDIO,
-    *,
-    allow_broken_vocoder: bool = False,
-):
-    """Load the q4 Chatterbox-Turbo model via the ``chatterbox_turbo`` backend.
-
-    Builds the model directly (bypassing the stock loader's all-files glob and the
-    ``conds.safetensors`` requirement in ``post_load_hook``), loads the q4 T3 + S3Gen + VE
-    with correct per-component prefixes, wires up the text and S3 speech tokenizers, and (if
-    ``ref_audio`` is given) primes zero-shot conditionals so ``generate`` needs no extra args.
-
-    Raises:
-        ChatterboxTurboUnavailable: if the S3Gen vocoder is under-covered by this repo's
-            weights (the current state — see module docstring), unless ``allow_broken_vocoder``.
-    """
-    from mlx_audio.tts.models.chatterbox_turbo import ChatterboxTurboTTS
-    from mlx_audio.utils import apply_quantization
-
-    repo_path = _resolve_repo_path(repo)
-    config = _load_config(repo_path)
-    qcfg = config.get("quantization") or config.get("quantization_config")
-
-    model = ChatterboxTurboTTS(config)
-    model.local_path = str(repo_path)
-
-    # Assemble weights with the prefixes the backend's sanitize()/load_weights() route by.
-    weights: dict[str, Any] = {}
-    for filename, prefix in _COMPONENT_FILES.items():
-        fpath = repo_path / filename
-        if not fpath.exists():
-            logger.warning("Chatterbox: expected component file missing: %s", fpath)
-            continue
-        for k, v in mx.load(str(fpath)).items():
-            weights[prefix + k] = v
-
-    sanitized = model.sanitize(weights) if hasattr(model, "sanitize") else weights
-    if qcfg:
-        apply_quantization(
-            model, {"quantization": qcfg}, sanitized,
-            getattr(model, "model_quant_predicate", None),
-        )
-    model.load_weights(list(sanitized.items()), strict=False)
-    mx.eval(model.parameters())
-
-    _load_tokenizers(model, repo_path)
-
-    coverage = _measured_s3gen_match_fraction(model)
-    if coverage < _MIN_S3GEN_COVERAGE and not allow_broken_vocoder:
-        raise ChatterboxTurboUnavailable(
-            f"S3Gen vocoder weights cover only {coverage:.0%} of the decoder for repo {repo!r}; "
-            "the q4 turbo repo's S3Gen layout does not match this mlx-audio backend, so output "
-            "would be near-silence. See src/reachy_chat/tts/chatterbox.py docstring. "
-            "Pass allow_broken_vocoder=True to load anyway for debugging."
-        )
-    if coverage < _MIN_S3GEN_COVERAGE:
-        logger.warning(
-            "Chatterbox: S3Gen vocoder only %.0f%% covered — audio will be near-silence.",
-            coverage * 100,
-        )
-
-    if ref_audio is not None:
-        # Prime zero-shot conditionals so synth_stream/generate need no per-call ref.
-        model.prepare_conditionals(ref_audio)
-
+    path = p[0] if isinstance(p, tuple) else p
+    logger.info("Chatterbox: loading %s ...", repo)
+    model = load_model(str(path))
+    logger.info("Chatterbox: loaded (sr=%s, default voice=%s)",
+                getattr(model, "sample_rate", SAMPLE_RATE), model._conds is not None)
     return model
 
 
-def _load_config(repo_path: Path) -> dict:
-    import json
+class ChatterboxTTS:
+    """Emotive, voice-cloning Chatterbox TTS that matches the pipeline ``TTSEngine`` contract.
 
-    with open(repo_path / "config.json", encoding="utf-8") as f:
-        return json.load(f)
+    Default voice is the model's built-in (from ``conds.safetensors``). Call
+    :meth:`set_voice` with a reference WAV/array to clone and speak in that voice instead.
+    All synthesis is synchronous (run it via ``asyncio.to_thread`` in the async app, like the
+    other engines) and never raises into the caller -- failures yield logged silence.
 
-
-def _load_tokenizers(model, repo_path: Path) -> None:
-    """Replicate post_load_hook's tokenizer setup without the conds.safetensors requirement."""
-    try:
-        from transformers import AutoTokenizer
-
-        tok = AutoTokenizer.from_pretrained(str(repo_path))
-        if tok.pad_token is None:
-            tok.pad_token = tok.eos_token
-        model.tokenizer = tok
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("Chatterbox: could not load text tokenizer: %s", e)
-
-    try:
-        from huggingface_hub import hf_hub_download
-
-        s3_weights_path = hf_hub_download(repo_id=S3TOKENIZER_REPO, filename="model.safetensors")
-        s3w = mx.load(s3_weights_path)
-        if hasattr(model._s3tokenizer, "sanitize"):
-            s3w = model._s3tokenizer.sanitize(s3w)
-        model._s3tokenizer.load_weights(list(s3w.items()), strict=False)
-        mx.eval(model._s3tokenizer.parameters())
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("Chatterbox: could not load S3 speech tokenizer: %s", e)
-
-
-def synth_stream(
-    model,
-    text: str,
-    *,
-    ref_audio: str | None = None,
-    **generate_kwargs: Any,
-) -> Iterator[np.ndarray]:
-    """Yield float32 1-D audio chunks for ``text`` — matches ``bench_tts``/``TTSEngine``.
-
-    Conditionals come from ``ref_audio`` if given, else from the ref primed at load time.
-    Note: Chatterbox-Turbo ignores ``exaggeration``/``cfg_weight`` (no emotion knob).
+    Args:
+        repo: HF repo id (default the verified ``chatterbox-4bit``).
+        ref_audio: optional reference to clone at construction (path/array). ``None`` keeps
+            the built-in default voice.
+        exaggeration: emotion intensity 0..~1.5 (0.5 neutral-natural; higher = more animated).
+        cfg_weight: classifier-free-guidance weight; lower (~0.3) = more expressive prosody.
+        temperature: T3 sampling temperature.
     """
-    if ref_audio is not None:
-        generate_kwargs.setdefault("ref_audio", ref_audio)
-    for seg in model.generate(text=text, **generate_kwargs):
-        au = getattr(seg, "audio", seg)
-        mx.eval(au)
-        yield np.array(au).reshape(-1).astype(np.float32)
+
+    def __init__(
+        self,
+        repo: str = DEFAULT_REPO,
+        ref_audio: str | Path | np.ndarray | mx.array | None = None,
+        *,
+        exaggeration: float = 0.5,
+        cfg_weight: float = 0.5,
+        temperature: float = 0.8,
+        model: Any | None = None,
+    ):
+        self.repo = repo
+        self.model = model if model is not None else load_chatterbox(repo)
+        self.sample_rate = int(getattr(self.model, "sample_rate", SAMPLE_RATE))
+        self.exaggeration = float(exaggeration)
+        self.cfg_weight = float(cfg_weight)
+        self.temperature = float(temperature)
+        # The built-in conditionals loaded from conds.safetensors; restored by set_voice(None).
+        self._default_conds = getattr(self.model, "_conds", None)
+        self._lock = threading.Lock()  # generate() mutates shared model state; serialize it.
+        self.voice_name = "default"
+        if ref_audio is not None:
+            self.set_voice(ref_audio)
+
+    # -- voice cloning -----------------------------------------------------------------
+    def set_voice(
+        self,
+        ref_audio: str | Path | np.ndarray | mx.array | None,
+        *,
+        exaggeration: float | None = None,
+    ) -> bool:
+        """Clone a voice from a reference clip (zero-shot), or restore the default voice.
+
+        ``ref_audio=None`` reverts to the model's built-in default voice. Otherwise the
+        reference (path or float audio at 24 kHz / any rate if a path) is encoded into T3 +
+        S3Gen conditionals and used for all subsequent synthesis. Best with ~5-10 s of clean
+        speech. Returns True on success; on failure it logs, keeps the current voice, and
+        returns False (never raises).
+        """
+        if ref_audio is None:
+            with self._lock:
+                self.model._conds = self._default_conds
+            self.voice_name = "default"
+            logger.info("Chatterbox: voice reset to built-in default")
+            return True
+        try:
+            wav = _load_audio_array(ref_audio, self.sample_rate)
+            exa = self.exaggeration if exaggeration is None else float(exaggeration)
+            conds = self.model.prepare_conditionals(wav, self.sample_rate, exaggeration=exa)
+            with self._lock:
+                self.model._conds = conds
+                mx.eval(self.model.parameters())
+            self.voice_name = ref_audio if isinstance(ref_audio, (str, Path)) else "cloned"
+            logger.info("Chatterbox: voice cloned from %s (%.2fs ref)",
+                        self.voice_name, wav.size / self.sample_rate)
+            return True
+        except Exception as e:  # never break the caller on a bad reference
+            logger.error("Chatterbox: set_voice failed (%s); keeping current voice", e)
+            return False
+
+    # -- synthesis ---------------------------------------------------------------------
+    def _generate_one(self, sentence: str, **overrides: Any) -> np.ndarray:
+        """Synthesize a single sentence with the current voice; returns 1-D float32.
+
+        Returns a tiny silence array on any failure (logged) so streaming never crashes.
+        """
+        kw: dict[str, Any] = {
+            "exaggeration": self.exaggeration,
+            "cfg_weight": self.cfg_weight,
+            "temperature": self.temperature,
+            "verbose": False,
+        }
+        kw.update(overrides)
+        try:
+            with self._lock:
+                chunks = []
+                for seg in self.model.generate(text=sentence, **kw):
+                    au = getattr(seg, "audio", seg)
+                    mx.eval(au)
+                    chunks.append(np.array(au).reshape(-1).astype(np.float32))
+            if not chunks:
+                return np.zeros(1, np.float32)
+            return np.concatenate(chunks)
+        except Exception as e:
+            logger.error("Chatterbox: synth failed for %r (%s); emitting silence",
+                         sentence[:60], e)
+            return np.zeros(int(0.1 * self.sample_rate), np.float32)
+
+    def synth_stream(
+        self,
+        text: str,
+        cancel: threading.Event | None = None,
+        **overrides: Any,
+    ) -> Iterator[np.ndarray]:
+        """Yield float32 1-D audio chunks, one per sentence, so playback starts on clause 1.
+
+        ``overrides`` may carry per-call ``exaggeration`` / ``cfg_weight`` / ``temperature``
+        (or ``ref_audio`` for a one-off voice). ``cancel`` is polled between sentences so the
+        pipeline can barge-in.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        for sent in (s for s in _SENT_RE.split(text) if s.strip()):
+            if cancel is not None and cancel.is_set():
+                return
+            audio = self._generate_one(sent, **overrides)
+            if cancel is not None and cancel.is_set():
+                return
+            yield audio
+
+    def synth(self, text: str, **overrides: Any) -> np.ndarray:
+        """Synthesize the whole utterance into one float32 array (silence if nothing)."""
+        chunks = list(self.synth_stream(text, **overrides))
+        return np.concatenate(chunks) if chunks else np.zeros(1, np.float32)
 
 
-def synth(model, text: str, **generate_kwargs: Any) -> np.ndarray:
-    chunks = list(synth_stream(model, text, **generate_kwargs))
-    return np.concatenate(chunks) if chunks else np.zeros(1, np.float32)
+def try_load_chatterbox(
+    repo: str = DEFAULT_REPO,
+    ref_audio: str | Path | np.ndarray | mx.array | None = None,
+    **kwargs: Any,
+) -> ChatterboxTTS | None:
+    """Construct :class:`ChatterboxTTS`, returning ``None`` (logged) instead of raising.
+
+    Use when the pipeline should degrade gracefully (e.g. fall back to Kokoro) if Chatterbox
+    can't be loaded on this machine.
+    """
+    try:
+        return ChatterboxTTS(repo, ref_audio=ref_audio, **kwargs)
+    except Exception as e:
+        logger.error("Chatterbox: load failed (%s); model unavailable", e)
+        return None
