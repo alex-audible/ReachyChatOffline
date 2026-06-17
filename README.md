@@ -4,6 +4,8 @@
 
 Talk to Reachy and it talks back, in under a second. Runs on Apple Silicon Macs (M2/M3/M4/M5) with 16 GB+ RAM.
 
+Will also clone your voice if you ask it - "Hey Reachy, can you clone my voice?"
+
 ## Setup
 
 Needs an Apple Silicon Mac and [uv](https://docs.astral.sh/uv/). Install uv if you don't have it:
