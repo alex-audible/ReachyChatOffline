@@ -190,7 +190,12 @@ class ChatterboxTTS:
             exa = self.exaggeration if exaggeration is None else float(exaggeration)
             conds = self.model.prepare_conditionals(wav, self.sample_rate, exaggeration=exa)
             with self._lock:
-                self.model._conds = conds
+                # Two backend conventions: the standard chatterbox returns the conditionals for
+                # the caller to assign; the turbo backend sets self._conds INTERNALLY and returns
+                # None. Only overwrite when we actually got a value back, else we'd clobber the
+                # turbo's just-set conds with None (→ silent "prepare_conditionals first" errors).
+                if conds is not None:
+                    self.model._conds = conds
                 mx.eval(self.model.parameters())
             self.voice_name = ref_audio if isinstance(ref_audio, (str, Path)) else "cloned"
             logger.info("Chatterbox: voice cloned from %s (%.2fs ref)",

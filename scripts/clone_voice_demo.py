@@ -98,6 +98,10 @@ def main() -> int:
                     help="seconds of mic audio to record (default 8)")
     ap.add_argument("--exaggeration", type=float, default=0.5,
                     help="emotion intensity 0..~1.5 (default 0.5)")
+    ap.add_argument("--model", type=str, default="mlx-community/chatterbox-8bit",
+                    help="Chatterbox repo to use. Default chatterbox-8bit (best clone fidelity + "
+                         "emotion knob). chatterbox-4bit is faster/smaller; the turbo models are "
+                         "for the fast default voice and do NOT clone.")
     ap.add_argument("--play", action="store_true", help="play the cloned sentences aloud")
     args = ap.parse_args()
 
@@ -105,9 +109,9 @@ def main() -> int:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Loading Chatterbox (mlx-community/chatterbox-4bit)...")
+    print(f"Loading Chatterbox ({args.model})...")
     t0 = time.perf_counter()
-    tts = ChatterboxTTS(exaggeration=args.exaggeration)
+    tts = ChatterboxTTS(repo=args.model, exaggeration=args.exaggeration)
     print(f"  loaded in {time.perf_counter()-t0:.1f}s (sr={tts.sample_rate} Hz)")
 
     # warmup so the reported TTFA/RTF reflect steady state, not first-call compile.
