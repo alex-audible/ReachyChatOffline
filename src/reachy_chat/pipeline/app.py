@@ -267,13 +267,17 @@ def main() -> None:
     ap.add_argument("--vision", action="store_true",
                     help="answer 'what do you see?' from the camera via Gemma 4 vision (adds ~1s)")
     ap.add_argument("--vision-model", default="mlx-community/gemma-4-E4B-it-qat-4bit",
-                    help="VLM for vision (E4B = higher quality; E2B is faster/lighter)")
+                    help="VLM for vision (default: Gemma 4 E4B = higher quality)")
+    ap.add_argument("--smallmodel", action="store_true",
+                    help="use the smaller/faster Gemma 4 E2B for vision instead of E4B")
     args = ap.parse_args()
 
+    vision_model = ("mlx-community/gemma-4-E2B-it-qat-4bit" if args.smallmodel
+                    else args.vision_model)
     app = ConversationApp(llm_repo=args.llm, tts=args.tts,
                           mode=Mode.WAKE_WORD if args.wake else Mode.ALWAYS_ON,
                           robot=args.robot, robot_url=args.robot_url,
-                          vision=args.vision, vision_model=args.vision_model)
+                          vision=args.vision, vision_model=vision_model)
     print("Warming up…")
     app.warmup()
     if args.mode == "live":
