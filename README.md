@@ -8,7 +8,7 @@ Will also clone your voice if you ask it - "Hey Reachy, can you clone my voice?"
 
 ## Setup
 
-Needs an Apple Silicon Mac and [uv](https://docs.astral.sh/uv/). Install uv if you don't have it:
+Needs an Apple Silicon Mac, the **[Reachy Mini Control](https://hf.co/reachy-mini/#/download)** app and [uv](https://docs.astral.sh/uv/). Install uv if you don't have it:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -28,12 +28,17 @@ The models (Parakeet, Gemma 4, Kokoro/Chatterbox, Silero, Smart-Turn) download f
 
 ## Run
 
-```bash
-# Talk to Reachy — always-on mic, default voice + camera vision:
-PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app
+Start the Reachy Mini Control app, connected to a real robot or running the simulator. Then activate ReachyChatOffline with a command  below:
 
-# Same, plus robot motion (look-at-speaker + gestures):
+```bash
+# Talk to Reachy — default voice + camera vision and Gemma 4 E4B model (best quality):
+PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --robot --llm mlx-community/gemma-4-E4B-it-qat-4bit
+
+# For computers with slower CPUs and less RAM, you can use a less capable LLM (defaults to Gemma 4 E2B):
 PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --robot
+
+# And for very low-spec machines (voice cloning wont work) 
+PYTHONPATH=src .venv/bin/python -m reachy_chat.pipeline.app --robot --no-vision --tts kokoro
 ```
 
 Run it from a **real Terminal** (Terminal.app / iTerm) so macOS can grant microphone access. The first launch downloads models (several GB, one-time) and warms up — judge responsiveness from the **second** turn on.
@@ -43,7 +48,7 @@ Run it from a **real Terminal** (Terminal.app / iTerm) so macOS can grant microp
 Common options:
 
 ```bash
---tts kokoro                                     # lowest-latency voice (~150 ms)
+--tts kokoro                                     # lowest-latency voice (~150 ms) but no voice cloning
 --no-vision                                      # disable the camera (saves memory)
 --llm mlx-community/gemma-4-E4B-it-qat-4bit       # smarter, slower model
 ```
