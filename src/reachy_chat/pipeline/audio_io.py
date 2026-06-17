@@ -69,6 +69,24 @@ class MicStream:
             pass
         self._resid = np.zeros(0, np.float32)
 
+    def record(self, seconds: float) -> np.ndarray:
+        """Block and capture ~``seconds`` of 16 kHz mono float32 from the mic, returned as one
+        array. Consumes the SAME queue/resampler as ``frames()``, so only call it while the
+        frames() loop is paused (e.g. inline during a turn, for voice-clone capture). Call
+        ``drain()`` first to drop stale audio (e.g. Reachy's own prompt)."""
+        need = int(seconds * self.target_sr)
+        out: list[np.ndarray] = []
+        got = 0
+        if self._resid.size:  # fold in anything already buffered past the last frame
+            out.append(self._resid); got += self._resid.size
+            self._resid = np.zeros(0, np.float32)
+        while got < need:
+            block = self._q.get()
+            if self._rs is not None:
+                block = np.asarray(self._rs.resample_chunk(block), dtype=np.float32).reshape(-1)
+            out.append(block); got += len(block)
+        return np.concatenate(out)[:need] if out else np.zeros(0, np.float32)
+
     def __exit__(self, *exc):
         if self._stream:
             self._stream.stop(); self._stream.close()

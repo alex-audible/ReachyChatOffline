@@ -15,6 +15,7 @@ Two drivers:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import threading
 import time
@@ -48,6 +49,27 @@ TTS_PRESETS = {
     "chatterbox": ("mlx-community/chatterbox-4bit", {"exaggeration": 0.5, "cfg_weight": 0.5}),
     "chatterbox-turbo": ("mlx-community/chatterbox-turbo-8bit", {}),
 }
+
+# --- Voice cloning by voice command ("Hey Reachy, can you clone my voice?") --------------
+# Matches "clone/copy/mimic/imitate ... [my] voice" or "sound/talk/speak (just) like me".
+_CLONE_RE = re.compile(
+    r"\b(clone|copy|mimic|imitate)\b[\w\s]{0,20}?\bvoice\b"
+    r"|\b(sound|talk|speak)\s+(just\s+)?like\s+me\b",
+    re.IGNORECASE,
+)
+# Chatterbox model used for the clone (best fidelity + keeps the emotion knob).
+CLONE_REPO = "mlx-community/chatterbox-8bit"
+CLONE_SECONDS = 12.0  # >= the 10 s the user asked for, with headroom
+CLONE_EXAGGERATION = 0.6  # a touch lively so the cloned voice has some life
+# Spoken prompts for the clone flow (the first two in the CURRENT voice, the last in the NEW one).
+CLONE_PROMPT = (
+    "I would love to! When I say go, just talk to me for about ten seconds. "
+    "Tell me your name, what you like to do for fun, your favourite subject at school, "
+    "and your favourite foods. Okay — go!"
+)
+CLONE_WORKING = "Great, thank you! Give me just a moment while I learn your voice."
+CLONE_DONE = "All done! This is what I sound like now. Pretty cool, right?"
+CLONE_FAILED = "Hmm, I could not quite catch your voice that time. Let's try again later."
 
 
 class _RobotLink:
@@ -166,13 +188,17 @@ class ConversationApp:
         self.machine.warmup()
 
     # -- one turn: STT.finalize -> LLM clauses -> TTS -> play ----------------
-    def run_turn(self, speaker=None) -> dict:
+    def run_turn(self, speaker=None, mic=None) -> dict:
         self._cancel.clear()
         self._capturing = False
         transcript = self.stt.finalize()
         if len(transcript.strip()) < 3:  # ignore noise / empty endpoints (don't reply to nothing)
             self.machine.finish_speaking()
             return {"transcript": transcript, "reply": "", "first_audio": None, "audio": []}
+        # "Hey Reachy, can you clone my voice?" — capture the speaker and switch the TTS to a
+        # clone of their voice. Needs mic + speaker (live mode only).
+        if mic is not None and speaker is not None and _CLONE_RE.search(transcript):
+            return self._clone_voice(transcript, speaker, mic)
         first_audio: float | None = None
         clauses: list[str] = []
         chunks: list[np.ndarray] = []
@@ -204,6 +230,61 @@ class ConversationApp:
         self.machine.finish_speaking()
         return {"transcript": transcript, "reply": reply,
                 "first_audio": first_audio, "audio": chunks}
+
+    # -- voice cloning by voice command --------------------------------------
+    def _speak(self, text: str, speaker) -> None:
+        """Synthesize ``text`` with the current TTS and play it (used for clone prompts)."""
+        for chunk in self.tts.synth_stream(text):
+            speaker.play(chunk)
+
+    def _clone_voice(self, transcript: str, speaker, mic) -> dict:
+        """Prompt the user, record ~10 s, clone their voice, and swap the TTS to the clone.
+
+        Runs inline on the pipeline thread (MLX is thread-bound). The two prompts before the
+        swap are spoken in the CURRENT voice; the confirmation after the swap is the FIRST
+        thing spoken in the cloned voice."""
+        import tempfile
+        import soundfile as sf
+
+        self.machine.begin_speaking()
+        if self.robot is not None:
+            self.robot.on_state("speaking")
+        # 1) ask the user to speak (in the current voice), then wait for it to finish
+        self._speak(CLONE_PROMPT, speaker)
+        speaker.wait()
+        # 2) record the reference straight from the mic (the frames() loop is paused here)
+        mic.drain()
+        print(f"  [clone] recording {CLONE_SECONDS:.0f}s …", flush=True)
+        ref = mic.record(CLONE_SECONDS)
+        tmp = f"{tempfile.gettempdir()}/reachy_voice_ref.wav"
+        sf.write(tmp, ref, mic.target_sr)
+        # 3) acknowledge (still the old voice) while the model loads/clones
+        self._speak(CLONE_WORKING, speaker)
+        speaker.wait()
+        ok = self._load_cloned_tts(tmp)
+        # 4) confirm — the first line in the NEW cloned voice (or report failure, old voice)
+        self._speak(CLONE_DONE if ok else CLONE_FAILED, speaker)
+        speaker.wait()
+        self.machine.finish_speaking()
+        return {"transcript": transcript, "reply": (CLONE_DONE if ok else CLONE_FAILED),
+                "first_audio": None, "audio": [], "cloned": ok}
+
+    def _load_cloned_tts(self, ref_path: str) -> bool:
+        """Point the TTS at a clone of ``ref_path``. Reuses the current Chatterbox model if one
+        is already loaded; otherwise loads CLONE_REPO and swaps it in (e.g. replacing Kokoro).
+        All our TTS engines share a 24 kHz rate, so the open Speaker stays valid. Never raises."""
+        try:
+            from reachy_chat.tts.chatterbox import ChatterboxTTS
+            if isinstance(self.tts, ChatterboxTTS):
+                return self.tts.set_voice(ref_path)
+            new = ChatterboxTTS(repo=CLONE_REPO, exaggeration=CLONE_EXAGGERATION)
+            if not new.set_voice(ref_path):
+                return False
+            self.tts = new  # Kokoro → cloned Chatterbox (same 24 kHz, Speaker unaffected)
+            return True
+        except Exception as e:
+            print(f"  [clone] failed: {type(e).__name__}: {e}", flush=True)
+            return False
 
     # -- offline driver (testable, measures full latency incl. endpointing) --
     def run_wav(self, path: str, realtime: bool = True) -> dict:
@@ -273,7 +354,7 @@ class ConversationApp:
                     # inference must run on the same thread the models were loaded on — spawning a
                     # worker thread per turn raises "no Stream(gpu, N) in current thread". (Barge-in
                     # is deferred until STT/LLM/TTS run on a single persistent MLX worker thread.)
-                    res = self.run_turn(speaker=speaker)
+                    res = self.run_turn(speaker=speaker, mic=mic)
                     print(f"  you    > {res['transcript']!r}", flush=True)
                     print(f"  reachy < {res['reply']!r}", flush=True)
                     if dbg and dbg_buf:
