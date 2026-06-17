@@ -82,9 +82,10 @@ class ConversationApp:
     def __init__(self, llm_repo: str = "mlx-community/gemma-4-E2B-it-qat-4bit",
                  tts: str = "kokoro", mode: Mode = Mode.ALWAYS_ON,
                  robot: bool = False, robot_url: str = "http://localhost:8000",
-                 vision: bool = False,
-                 vision_model: str = "mlx-community/gemma-4-E4B-it-qat-4bit"):
+                 vision: bool = False, vision_model: str | None = None):
         repo, kwargs = TTS_PRESETS.get(tts, TTS_PRESETS["kokoro"])
+        vision_model = vision_model or llm_repo  # vision uses the SAME Gemma 4 model as chat
+        self.llm_repo = llm_repo
         self.stt = STTEngine()
         self.llm = LLMEngine(repo=llm_repo)
         self.tts = TTSEngine(repo=repo, generate_kwargs=kwargs)
@@ -127,6 +128,10 @@ class ConversationApp:
         print("Models in use:", flush=True)
         for role, name in self._model_info.items():
             print(f"  {role:7s} {name}", flush=True)
+        if "E2B" in self.llm_repo:
+            print("  Using the fast Gemma 4 E2B. For a smarter (slower) model, relaunch with:",
+                  flush=True)
+            print("    --llm mlx-community/gemma-4-E4B-it-qat-4bit", flush=True)
 
     def warmup(self) -> None:
         self.print_models()
@@ -258,7 +263,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["live", "wav"], default="wav")
     ap.add_argument("--wav", default=str(ROOT / "audio_samples/prompts/p3_vision.wav"))
-    ap.add_argument("--llm", default="mlx-community/gemma-4-E2B-it-qat-4bit")
+    ap.add_argument("--llm", default="mlx-community/gemma-4-E2B-it-qat-4bit",
+                    help="Gemma 4 model for BOTH chat and vision (default: E2B, fast; "
+                         "pass mlx-community/gemma-4-E4B-it-qat-4bit for a smarter, slower model)")
     ap.add_argument("--tts", default="kokoro", choices=list(TTS_PRESETS))
     ap.add_argument("--wake", action="store_true", help="wake-word mode ('Hey Reachy')")
     ap.add_argument("--speak", action="store_true", help="(wav mode) play the response aloud")
@@ -266,18 +273,12 @@ def main() -> None:
     ap.add_argument("--robot-url", default="http://localhost:8000")
     ap.add_argument("--vision", action="store_true",
                     help="answer 'what do you see?' from the camera via Gemma 4 vision (adds ~1s)")
-    ap.add_argument("--vision-model", default="mlx-community/gemma-4-E4B-it-qat-4bit",
-                    help="VLM for vision (default: Gemma 4 E4B = higher quality)")
-    ap.add_argument("--smallmodel", action="store_true",
-                    help="use the smaller/faster Gemma 4 E2B for vision instead of E4B")
     args = ap.parse_args()
 
-    vision_model = ("mlx-community/gemma-4-E2B-it-qat-4bit" if args.smallmodel
-                    else args.vision_model)
     app = ConversationApp(llm_repo=args.llm, tts=args.tts,
                           mode=Mode.WAKE_WORD if args.wake else Mode.ALWAYS_ON,
                           robot=args.robot, robot_url=args.robot_url,
-                          vision=args.vision, vision_model=vision_model)
+                          vision=args.vision)  # vision uses the same --llm model
     print("Warming up…")
     app.warmup()
     if args.mode == "live":
