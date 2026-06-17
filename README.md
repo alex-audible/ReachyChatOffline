@@ -6,9 +6,18 @@ Talk to Reachy and it talks back, in under a second. Feels natural. Should work 
 
 ## Quick start
 
-After the one-time [setup](#getting-started), from the project directory:
+Install **[Reachy Mini Control](https://hf.co/reachy-mini/#/download)** and run it. Activate the robot or run the simulator.
+
+# Create an isolated venv with the correct Python (3.12, auto-downloaded) and install:
+uv venv                 # reads .python-version → CPython 3.12
+uv pip install -e .     # installs reachy-chat + all runtime deps into .venv
+```
+That installs the `reachy-chat` command. Verify:
 
 ```bash
+uv run reachy-chat --help
+```
+
 cd ReachyChatOffline
 
 # Talk to Reachy — live mic, vision on, turbo voice, + robot embodiment:
@@ -58,16 +67,7 @@ mic → VAD/endpoint → STT(finalize) → LLM(stream clauses) → TTS(stream) �
 git clone <this-repo> ReachyChatOffline
 cd ReachyChatOffline
 
-# Create an isolated venv with the correct Python (3.12, auto-downloaded) and install:
-uv venv                 # reads .python-version → CPython 3.12
-uv pip install -e .     # installs reachy-chat + all runtime deps into .venv
-```
 
-That installs the `reachy-chat` command. Verify:
-
-```bash
-uv run reachy-chat --help
-```
 
 Now choose a setup path below depending on whether you have a physical robot.
 
