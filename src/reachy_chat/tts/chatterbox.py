@@ -148,6 +148,7 @@ class ChatterboxTTS:
         self.repo = repo
         self.model = model if model is not None else load_chatterbox(repo)
         self.sample_rate = int(getattr(self.model, "sample_rate", SAMPLE_RATE))
+        self.sr = self.sample_rate  # alias matching pipeline TTSEngine.sr (app uses app.tts.sr)
         self.exaggeration = float(exaggeration)
         self.cfg_weight = float(cfg_weight)
         self.temperature = float(temperature)

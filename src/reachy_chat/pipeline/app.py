@@ -35,10 +35,14 @@ from reachy_chat.pipeline.engines import LLMEngine, STTEngine, TTSEngine  # noqa
 
 FRAME = 512  # 32 ms @ 16 kHz
 
-# TTS presets: name -> (repo, generate_kwargs)
+# TTS presets: name -> (repo, generate_kwargs).
+#   kokoro     — fast (~150 ms TTFA), named voices (af_heart, …) via the "voice" kwarg.
+#   chatterbox — higher-quality + emotive + voice-CLONABLE (~1 s TTFA, no sub-sentence
+#                streaming). No named voices: the built-in default voice, or clone from a
+#                reference clip with --voice FILE. exaggeration/cfg_weight are emotion knobs.
 TTS_PRESETS = {
     "kokoro": ("mlx-community/Kokoro-82M-bf16", {"voice": "af_heart", "lang_code": "a"}),
-    "chatterbox": ("mlx-community/chatterbox-turbo-mlx-q4", {"exaggeration": 0.6, "cfg_weight": 0.4}),
+    "chatterbox": ("mlx-community/chatterbox-4bit", {"exaggeration": 0.5, "cfg_weight": 0.5}),
 }
 
 
@@ -87,13 +91,24 @@ class ConversationApp:
     def __init__(self, llm_repo: str = "mlx-community/gemma-4-E2B-it-qat-4bit",
                  tts: str = "kokoro", mode: Mode = Mode.ALWAYS_ON,
                  robot: bool = False, robot_url: str = "http://localhost:8000",
-                 vision: bool = False, vision_model: str | None = None):
+                 vision: bool = False, vision_model: str | None = None,
+                 voice: str | None = None, exaggeration: float | None = None):
         repo, kwargs = TTS_PRESETS.get(tts, TTS_PRESETS["kokoro"])
         vision_model = vision_model or llm_repo  # vision uses the SAME Gemma 4 model as chat
         self.llm_repo = llm_repo
         self.stt = STTEngine()
         self.llm = LLMEngine(repo=llm_repo)
-        self.tts = TTSEngine(repo=repo, generate_kwargs=kwargs)
+        # Chatterbox is a different engine (emotive + voice-cloning); Kokoro et al. go through
+        # the generic mlx-audio TTSEngine. Both expose the same synth_stream/synth/.sr contract.
+        if tts == "chatterbox":
+            from reachy_chat.tts.chatterbox import ChatterboxTTS
+            exa = exaggeration if exaggeration is not None else kwargs.get("exaggeration", 0.5)
+            self.tts = ChatterboxTTS(repo=repo, ref_audio=voice, exaggeration=exa,
+                                     cfg_weight=kwargs.get("cfg_weight", 0.5))
+            tts_voice = f"cloned: {voice}" if voice else "built-in default"
+        else:
+            self.tts = TTSEngine(repo=repo, generate_kwargs=kwargs)
+            tts_voice = kwargs.get("voice", "default")
         self.robot = _RobotLink(robot_url) if robot else None
         self.vision = None
         if vision:
@@ -107,7 +122,7 @@ class ConversationApp:
         self._model_info = {
             "STT": "mlx-community/parakeet-tdt-0.6b-v2",
             "LLM": llm_repo,
-            "TTS": repo,
+            "TTS": f"{repo}  (voice: {tts_voice})",
             "Vision": (vision_model if self.vision is not None else "off (--vision to enable)"),
         }
         self.machine = InteractionMachine(
@@ -278,7 +293,13 @@ def main() -> None:
     ap.add_argument("--llm", default="mlx-community/gemma-4-E2B-it-qat-4bit",
                     help="Gemma 4 model for BOTH chat and vision (default: E2B, fast; "
                          "pass mlx-community/gemma-4-E4B-it-qat-4bit for a smarter, slower model)")
-    ap.add_argument("--tts", default="kokoro", choices=list(TTS_PRESETS))
+    ap.add_argument("--tts", default="kokoro", choices=list(TTS_PRESETS),
+                    help="speech engine: kokoro (fast) or chatterbox (emotive + voice-clonable)")
+    ap.add_argument("--voice", default=None,
+                    help="(chatterbox only) reference WAV to clone the voice from; "
+                         "omit for the built-in default voice")
+    ap.add_argument("--exaggeration", type=float, default=None,
+                    help="(chatterbox only) emotion intensity 0..~1.5 (default 0.5)")
     ap.add_argument("--wake", action="store_true", help="wake-word mode ('Hey Reachy')")
     ap.add_argument("--speak", action="store_true", help="(wav mode) play the response aloud")
     ap.add_argument("--robot", action="store_true", help="drive the Reachy daemon/sim (look-at + emotions)")
@@ -290,7 +311,8 @@ def main() -> None:
     app = ConversationApp(llm_repo=args.llm, tts=args.tts,
                           mode=Mode.WAKE_WORD if args.wake else Mode.ALWAYS_ON,
                           robot=args.robot, robot_url=args.robot_url,
-                          vision=args.vision)  # vision uses the same --llm model
+                          vision=args.vision,  # vision uses the same --llm model
+                          voice=args.voice, exaggeration=args.exaggeration)
     print("Warming up…")
     app.warmup()
     if args.mode == "live":
