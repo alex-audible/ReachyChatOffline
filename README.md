@@ -127,6 +127,7 @@ docs/         # architecture, performance report, research, experiments
 - **Working end-to-end:** voice pipeline, turn-taking, wake-word, robot embodiment (verified against the simulator), and the vision path.
 - **Latency:** compute first-audio **p50 ~271 ms**. The full path including endpoint silence detection is ~590 ms; the endpoint window is the bottleneck, being optimized.
 - **Barge-in** (interrupting mid-sentence) is parked on the `feature/barge-in` branch — needs a single persistent MLX worker thread plus echo cancellation.
+- **Vision** When vision is enabled, a second copy of the model is loaded to handle vision tasks via mlx-vlm. This is inefficient but I had problems with running vision + chat under a single model. Something to improve on for a future version.  
 
 ## License
 
