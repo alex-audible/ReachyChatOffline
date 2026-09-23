@@ -51,6 +51,8 @@ Common options:
 --tts kokoro                                     # lowest-latency voice (~150 ms) but no voice cloning
 --no-vision                                      # disable the camera (saves memory)
 --llm mlx-community/gemma-4-E4B-it-qat-4bit       # smarter, slower model
+--context context/kids_books.txt                 # kids' library persona + book catalogue to recommend from
+--audio-device default                           # talk through the Mac's mic/speakers instead of the robot's
 ```
 
 Mid-conversation, say **"Hey Reachy, can you clone my voice?"** to switch to a clone of your voice (see [Voice cloning](#voice-cloning)). Full flag reference is in [Flags](#flags).
@@ -85,6 +87,8 @@ mic → VAD/endpoint → STT(finalize) → LLM(stream clauses) → TTS(stream) �
 | `--robot-url <url>` | `http://localhost:8000` | Daemon address (e.g. `http://reachy-mini.local:8000` for a Wireless unit) |
 | `--vision` / `--no-vision` | on | Camera vision via Gemma 4, loaded at startup; `--no-vision` skips it (saves memory on low-RAM machines) |
 | `--wake` | off | Wake-word mode — idle until "Hey Reachy" |
+| `--context <file>` | off | Switches to the children's-library **book-recommender persona** with this catalogue appended (prefilled once at startup, no per-turn cost). Ships with `context/kids_books.txt`, 20 kids' books |
+| `--audio-device <name\|index>` | `auto` | Mic + speaker device. `auto` = **Reachy Mini Audio** when the robot is plugged in (its speaker, mic array, and hardware echo cancellation), else the Mac's defaults; `default` forces the Mac; or a device index / name substring |
 | `--wav <path>` | `audio_samples/prompts/p3_vision.wav` | (wav mode) prompt WAV — 16 kHz mono |
 | `--speak` | off | (wav mode) play the generated response aloud |
 
@@ -106,7 +110,8 @@ PYTHONPATH=src .venv/bin/python scripts/clone_voice_demo.py --play
 - **No transcript / empty audio** → microphone permission. Grant your terminal mic access in *System Settings → Privacy & Security → Microphone*, then restart it. `REACHY_DEBUG_AUDIO=1` dumps per-turn audio to `/tmp/reachy_turn_*.wav`.
 - **`needs Python 3.10–3.12`** → wrong interpreter. Recreate: `uv venv --python 3.12 && uv pip install -e .`.
 - **`--robot` does nothing / connection errors** → the daemon isn't reachable at `--robot-url`. Launch Reachy Mini Control and confirm `http://localhost:8000/docs` loads.
-- **Reachy hears its own voice** → no hardware echo cancellation on a Mac. **Use headphones.** (The physical robot handles this in hardware.)
+- **Reachy hears its own voice** → no hardware echo cancellation on a Mac. **Use headphones.** (The physical robot handles this in hardware, and is used automatically when plugged in — see `--audio-device`.)
+- **Sound comes out of the Mac, not the robot** → the robot's USB audio wasn't found; check `--audio-device` and that "Reachy Mini Audio" appears in *System Settings → Sound*.
 
 ## Project layout
 
@@ -119,6 +124,7 @@ src/reachy_chat/
   tts/        # Kokoro fix + Chatterbox emotive/cloning engine
 benchmarks/   # latency harness + per-component + end-to-end benchmarks
 audio_samples/prompts/   # 16 kHz test prompt WAVs
+context/      # reference text for --context (e.g. kids_books.txt)
 docs/         # architecture, performance report, research, experiments
 ```
 

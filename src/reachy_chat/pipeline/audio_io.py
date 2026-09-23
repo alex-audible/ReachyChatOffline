@@ -103,6 +103,9 @@ class Speaker:
         self.device = device if device is not None else sd.default.device[1]
         info = sd.query_devices(self.device, "output")
         self.out_sr = int(info["default_samplerate"])  # device native rate
+        # Mono TTS is duplicated onto every output channel (up to 2). channels=1 on a
+        # 2-out USB device (Reachy Mini Audio) would only drive the left channel.
+        self.channels = max(1, min(2, int(info["max_output_channels"])))
         self._q: queue.Queue[np.ndarray | None] = queue.Queue()
         self._stream = None
         self._thread = None
@@ -112,7 +115,7 @@ class Speaker:
 
     def __enter__(self):
         self._stream = self._sd.OutputStream(
-            samplerate=self.out_sr, channels=1, dtype="float32", device=self.device)
+            samplerate=self.out_sr, channels=self.channels, dtype="float32", device=self.device)
         self._stream.start()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -124,7 +127,9 @@ class Speaker:
             if chunk is None:
                 break
             try:
-                self._stream.write(chunk)
+                if self.channels > 1:
+                    chunk = np.repeat(chunk[:, None], self.channels, axis=1)
+                self._stream.write(np.ascontiguousarray(chunk))
             except Exception:
                 pass
             with self._lock:

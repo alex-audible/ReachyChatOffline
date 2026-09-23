@@ -32,7 +32,7 @@ if _BENCH.is_dir():
     sys.path.insert(0, str(_BENCH))
 
 from reachy_chat.audio import Callbacks, InteractionConfig, InteractionMachine, Mode, State  # noqa: E402
-from reachy_chat.pipeline.engines import LLMEngine, STTEngine, TTSEngine  # noqa: E402
+from reachy_chat.pipeline.engines import DEFAULT_SYSTEM_PROMPT, LLMEngine, STTEngine, TTSEngine  # noqa: E402
 
 FRAME = 512  # 32 ms @ 16 kHz
 
@@ -50,6 +50,78 @@ TTS_PRESETS = {
     "chatterbox-4bit": ("mlx-community/chatterbox-4bit", {"exaggeration": 0.5, "cfg_weight": 0.5}),
     "chatterbox-turbo-8bit": ("mlx-community/chatterbox-turbo-8bit", {}),
 }
+
+# --- Audio device selection -------------------------------------------------------------
+# The wired Reachy Mini exposes "Reachy Mini Audio" (USB, XMOS XVF3800: 16 kHz, onboard echo
+# cancellation + DoA) with both a mic array and a speaker. Talking through it — rather than the
+# Mac's mic/speakers — is what you want whenever the robot is plugged in, so "auto" picks it.
+REACHY_AUDIO_NAME = "Reachy Mini Audio"
+
+
+def resolve_audio_device(spec: str | None) -> int | None:
+    """Map --audio-device to a sounddevice index, or None for the system default.
+
+    spec: "auto" (Reachy Mini Audio if present, else system default) | "default" |
+    a device index | a case-insensitive substring of the device name."""
+    import sounddevice as sd
+    if spec is None or spec == "default":
+        return None
+    devs = sd.query_devices()
+    if spec == "auto":
+        spec = REACHY_AUDIO_NAME
+        strict = False
+    else:
+        strict = True
+    if spec.isdigit():
+        return int(spec)
+    for i, d in enumerate(devs):
+        if spec.lower() in d["name"].lower() and d["max_input_channels"] > 0 \
+                and d["max_output_channels"] > 0:
+            return i
+    if strict:
+        names = ", ".join(f"[{i}] {d['name']}" for i, d in enumerate(devs))
+        raise SystemExit(f"--audio-device {spec!r}: no device with both input and output "
+                         f"matches. Available: {names}")
+    return None
+
+
+def audio_device_label(device: int | None) -> str:
+    import sounddevice as sd
+    if device is None:
+        i, o = sd.default.device
+        return f"{sd.query_devices(i)['name']} (in) / {sd.query_devices(o)['name']} (out)  [system default]"
+    return f"{sd.query_devices(device)['name']} (in+out)"
+
+
+# --- Children's-library persona + catalogue (--context) -----------------------------------
+# The system prompt is prefilled into the LLM's KV cache ONCE at startup, so a few hundred lines
+# of catalogue cost a one-off prefill and nothing per turn.
+LIBRARY_SYSTEM_PROMPT = (
+    "You are Reachy, a friendly little robot who lives in the children's library and helps kids "
+    "find great books to read. You are talking out loud with children, so keep it simple, warm and "
+    "fun: short sentences, easy words, and usually one to three sentences per reply. "
+    "When a kid asks for a book, recommend one straight away from the catalogue below: say the "
+    "title and who wrote it, then one exciting sentence about why they'll like it. Don't ask "
+    "questions before recommending. If you don't know their age or what they like, just pick a "
+    "popular book that fits whatever they said. Only ask a question if you truly cannot choose, and "
+    "never more than one. If they want another book, or didn't like your pick, give a different one "
+    "without fuss. Only recommend books that are in the catalogue; if none fit, say so kindly and "
+    "offer the closest one. If they ask about something other than books, chat kindly and briefly, "
+    "and come back to books when it feels natural. Remember what was said earlier in the "
+    "conversation. Speak plainly: never use asterisks, emojis, markdown, bullet points, headings, "
+    "stage directions, or action descriptions like *(tilts head)* — express everything in spoken "
+    "words."
+)
+
+
+def build_system_prompt(context_path: str | None) -> str:
+    """No context → the generic desk-robot persona. With --context → the children's-library
+    book-recommender persona with the catalogue file appended (one line per book)."""
+    if not context_path:
+        return DEFAULT_SYSTEM_PROMPT
+    text = Path(context_path).read_text(encoding="utf-8").strip()
+    return LIBRARY_SYSTEM_PROMPT + "\n\nBook catalogue:\n" + text
+
 
 # --- Voice cloning by voice command ("Hey Reachy, can you clone my voice?") --------------
 # Matches "clone/copy/mimic/imitate ... [my] voice" or "sound/talk/speak (just) like me".
@@ -120,12 +192,15 @@ class ConversationApp:
                  tts: str = "chatterbox-turbo-8bit", mode: Mode = Mode.ALWAYS_ON,
                  robot: bool = False, robot_url: str = "http://localhost:8000",
                  vision: bool = True, vision_model: str | None = None,
-                 voice: str | None = None, exaggeration: float | None = None):
+                 voice: str | None = None, exaggeration: float | None = None,
+                 system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+                 audio_device: int | None = None):
         repo, kwargs = TTS_PRESETS.get(tts, TTS_PRESETS["kokoro"])
+        self.audio_device = audio_device  # sounddevice index for mic+speaker; None = system default
         vision_model = vision_model or llm_repo  # vision uses the SAME Gemma 4 model as chat
         self.llm_repo = llm_repo
         self.stt = STTEngine()
-        self.llm = LLMEngine(repo=llm_repo)
+        self.llm = LLMEngine(repo=llm_repo, system_prompt=system_prompt)
         # Chatterbox is a different engine (emotive + voice-cloning); Kokoro et al. go through
         # the generic mlx-audio TTSEngine. Both expose the same synth_stream/synth/.sr contract.
         if tts.startswith("chatterbox"):
@@ -152,6 +227,7 @@ class ConversationApp:
             "TTS": f"{repo}  (voice: {tts_voice})",
             "Vision": (f"{vision_model}  (separate mlx-vlm model)" if self.vision is not None
                        else "off (--no-vision)"),
+            "Audio": audio_device_label(audio_device),
         }
         self.machine = InteractionMachine(
             InteractionConfig(mode=mode),
@@ -346,7 +422,8 @@ class ConversationApp:
         turn_n = 0
         print("Listening… (Ctrl-C to stop)", flush=True)
         prev = self.machine.state
-        with MicStream() as mic, Speaker(sr=self.tts.sr) as speaker:
+        with MicStream(device=self.audio_device) as mic, \
+                Speaker(sr=self.tts.sr, device=self.audio_device) as speaker:
             if self.robot is not None:
                 self.robot.start()
             for frame in mic.frames():
@@ -408,13 +485,24 @@ def main() -> None:
                     help="camera vision ('what do you see?') via Gemma 4, loaded at startup. "
                          "On by default; --no-vision skips it (saves a second ~4-6 GB model — "
                          "use on low-RAM machines)")
+    ap.add_argument("--audio-device", default="auto", metavar="NAME|INDEX",
+                    help="mic+speaker device: 'auto' (default: Reachy Mini Audio when plugged in, "
+                         "else the system default), 'default' (Mac mic/speakers), a device index, "
+                         "or a name substring")
+    ap.add_argument("--context", default=None, metavar="FILE",
+                    help="text file appended to the persona (e.g. context/kids_books.txt, a "
+                         "library catalogue for book recommendations); prefilled once at startup")
     args = ap.parse_args()
 
     app = ConversationApp(llm_repo=args.llm, tts=args.tts,
                           mode=Mode.WAKE_WORD if args.wake else Mode.ALWAYS_ON,
                           robot=args.robot, robot_url=args.robot_url,
                           vision=args.vision,  # vision uses the same --llm model
-                          voice=args.voice, exaggeration=args.exaggeration)
+                          voice=args.voice, exaggeration=args.exaggeration,
+                          system_prompt=build_system_prompt(args.context),
+                          audio_device=resolve_audio_device(args.audio_device))
+    if args.context:
+        print(f"Context: {args.context}")
     print("Warming up…")
     app.warmup()
     if args.mode == "live":
@@ -434,7 +522,7 @@ def main() -> None:
             import time
             from reachy_chat.pipeline.audio_io import Speaker
             print("playing response…", flush=True)
-            with Speaker(sr=app.tts.sr) as sp:
+            with Speaker(sr=app.tts.sr, device=app.audio_device) as sp:
                 for ch in res["audio"]:
                     sp.play(ch)
                 dur = sum(len(c) for c in res["audio"]) / app.tts.sr
